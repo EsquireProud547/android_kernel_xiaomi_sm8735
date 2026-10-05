@@ -176,10 +176,23 @@ sphinx_*/
 # Rust analyzer configuration
 /rust-project.json
 
-# CI configuration. Line 13 above is a bare `.*` rule, which silently swallows
-# this whole directory -- `.github/` matched it and the workflow never reached
-# the repository. The negations below re-admit it. Verified with
-#   git check-ignore -v .github/workflows/build-onyx.yml
-# which must print nothing (or only a negated rule) after this change.
+# CI configuration. Two separate rules above swallow this directory, and both
+# had to be undone:
+#
+#   line 13  `.*`        matches .github/ itself
+#   line 40  `*.patch`   matches .github/actions/*.patch
+#
+# Getting either wrong is silent: `git add -A` skips the files, `git status`
+# looks clean, the workflow lands in the repository, and CI dies several steps
+# later with "No such file or directory" pointing at a file that is plainly
+# in the diff of the commit you just made. That is exactly how the first run of
+# this pipeline failed.
+#
+# Verify after touching this file:
+#   git check-ignore -v .github/workflows/build-onyx.yml \
+#                    .github/actions/droidspaces_sysvipc.patch \
+#                    .github/actions/libbpf_strchr_const.patch
+# Every one of those must exit 1 (not ignored). Do not skip this check.
 !.github/
 !/.github/
+!.github/actions/*.patch

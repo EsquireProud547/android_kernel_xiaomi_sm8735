@@ -42,8 +42,13 @@ name: Build Onyx Kernel
 #     stock base behaviour; do not "fix" it in a fragment, that is a gate 1
 #     override.
 #
-#   * .gitignore line 13 is a bare `.*` that swallowed .github/. Negations were
-#     appended to .gitignore; without them this workflow would never run.
+#   * .gitignore had TWO rules that swallow the CI directory -- line 13 `.*`
+#     (matches .github/ itself) and line 40 `*.patch` (matches
+#     .github/actions/*.patch). Both are negated at the bottom of that file.
+#     Missing either one is silent: `git add -A` skips the files, `git status`
+#     stays clean, the workflow still lands in the repo, and CI dies a few steps
+#     in with "No such file or directory" for a file that looks like it is
+#     right there in the commit. That is how the first run failed.
 #
 # Not ported: BBRv3, NTSYNC, Baseband-guard (absent from 6.6.142).
 
@@ -52,11 +57,14 @@ env:
   CLANG_BRANCH: android17-release
   VENDOR_FRAGMENT: arch/arm64/configs/vendor/onyx_perf.config
   KERNEL_CODENAME: Onyx
-  # susfs4ksu has no android17-6.6 branch. gki-android15-6.6 is its only 6.6
-  # branch and was verified to apply to this tree; pinning the commit makes that
-  # a checked fact rather than a moving target.
+  # susfs4ksu has no android17-6.6 branch; gki-android15-6.6 is its only 6.6
+  # branch, and it does apply to this tree. Deliberately NOT pinned to a
+  # commit: we always track the branch head so bug fixes upstream land without
+  # a commit here. The cost of that choice is that an upstream change could
+  # stop applying to 6.6.142 -- so the outcome is recorded in SUSFS_STATUS and
+  # gate 3 turns a lost CONFIG_KSU_SUSFS into a hard build failure. Loud, not
+  # silent, which is what matters.
   SUSFS_BRANCH: gki-android15-6.6
-  SUSFS_COMMIT: a0f9c59e2243f8a5db955f4ad1686d5e0ad26e1a
 
 on:
   workflow_dispatch:
@@ -242,25 +250,18 @@ jobs:
         if: inputs.enable_susfs
         run: |
           echo "Applying SUSFS patches..."
-          # SUSFS_BRANCH is the only 6.6 branch susfs4ksu publishes (there is no
-          # android17-6.6). The commit is pinned because this pipeline depends on
-          # the patch still applying to 6.6.142, and that is only a checkable
-          # fact if the input is fixed.
+          # Always the branch head -- no pin. susfs4ksu has no android17-6.6
+          # branch, so gki-android15-6.6 is the only 6.6 one, and it does apply
+          # to this tree (measured at the time of writing: 19 hunks, 0 failures,
+          # one hunk at fuzz 1). Upstream fixes should arrive without editing
+          # this file, so tracking the head is the intended behaviour.
+          #
+          # If a future upstream commit stops applying, that is visible rather
+          # than silent: SUSFS_STATUS is recorded, and gate 3 below fails the
+          # build because CONFIG_KSU_SUSFS would be missing from out/.config.
           if git clone -q https://gitlab.com/simonpunk/susfs4ksu.git \
                -b "${{ env.SUSFS_BRANCH }}" --depth 1 susfs4ksu; then
-            HEAD_SHA=$(git -C susfs4ksu rev-parse HEAD)
-            echo "  cloned susfs4ksu ${{ env.SUSFS_BRANCH }} @ $HEAD_SHA"
-            if [ "$HEAD_SHA" != "${{ env.SUSFS_COMMIT }}" ]; then
-              # Branch moved. Pin the commit, but do not let this abort the
-              # build: fetching an arbitrary SHA needs the server to allow it,
-              # and when the object is already present a fetch is pointless.
-              echo "::warning::branch head $HEAD_SHA != pinned ${{ env.SUSFS_COMMIT }}"
-              git -C susfs4ksu fetch -q --depth 1 origin "${{ env.SUSFS_COMMIT }}" \
-                || echo "::warning::could not fetch pinned commit; using branch head"
-              git -C susfs4ksu checkout -q "${{ env.SUSFS_COMMIT }}" \
-                || echo "::warning::could not check out pinned commit; using branch head"
-            fi
-            echo "  susfs4ksu at $(git -C susfs4ksu rev-parse HEAD)"
+            echo "  susfs4ksu ${{ env.SUSFS_BRANCH }} @ $(git -C susfs4ksu rev-parse HEAD)"
             # This tree already has <linux/dma-buf.h> in fs/proc/base.c:103, so
             # the CLO fixup is a no-op here. It is kept because it is
             # idempotent and self-checking, and because the SUSFS hunk that
@@ -272,14 +273,14 @@ jobs:
               # patch alone only adds glue/context.
               cp -v susfs4ksu/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
               cp -v susfs4ksu/kernel_patches/fs/* fs/ 2>/dev/null || true
-              echo "SUSFS_STATUS=applied" >> $GITHUB_ENV
+              echo "SUSFS_STATUS=applied ($(git -C susfs4ksu rev-parse --short HEAD))" >> $GITHUB_ENV
             else
               echo "SUSFS_STATUS=patch-failed" >> $GITHUB_ENV
-              echo "::warning::SUSFS patch did not apply; config symbols will be dropped by olddefconfig"
+              echo "::warning::SUSFS patch did not apply to 6.6.142; gate 3 will fail the build"
             fi
           else
             echo "SUSFS_STATUS=clone-failed" >> $GITHUB_ENV
-            echo "::warning::could not clone susfs4ksu"
+            echo "::warning::could not clone susfs4ksu; gate 3 will fail the build"
           fi
 
       - name: Apply Droidspaces kABI patch

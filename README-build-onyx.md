@@ -25,7 +25,7 @@
 | `droidspaces_sysvipc.patch` | `sched.h` hunk @ 1075 / 1524 | hunk @ 1076 / 1530（+1 / +6） |
 | `libbpf_strchr_const.patch` | `libbpf.c` @ 11241，`Makefile:89` | @ 11255，`Makefile:88`（+14 / −1） |
 
-### 1.2 SUSFS：分支名对不上，但补丁能用
+### 1.2 SUSFS：分支名对不上，但补丁能用；**不钉 commit**
 
 susfs4ksu **没有 android17-6.6 分支**，它唯一的 6.6 分支是 `gki-android15-6.6`。
 实测该分支的补丁套到 6.6.142 上：
@@ -35,12 +35,13 @@ susfs4ksu **没有 android17-6.6 分支**，它唯一的 6.6 分支是 `gki-andr
 仅 fs/proc/base.c 的 hunk #4 落在 fuzz 1（offset 148）
 ```
 
-因为流水线现在**依赖**这个补丁还能套上，所以做了两件事：
+**刻意不钉 commit**，始终跟踪分支头，这样上游修复不需要改本仓库就能生效。
+代价是上游某次改动可能让补丁套不上 6.6.142——所以做了两件事保证"响而不静"：
 
-- `SUSFS_COMMIT` 把 `a0f9c59e2243f8a5db955f4ad1686d5e0ad26e1a` 钉死，
-  免得「能不能套上」随上游移动；
-- 套用结果写进 `SUSFS_STATUS`，失败时闸门 3 会因为 `CONFIG_KSU_SUSFS` 掉失而报错。
-  静默失效比构建失败更糟。
+- 实际用到的 commit 记进 `SUSFS_STATUS`（`applied (a0f9c59e)` 这种形式）；
+- 套用失败时闸门 3 会因为 `CONFIG_KSU_SUSFS` 掉失而**硬失败**。
+
+静默失效比构建失败更糟。
 
 顺带：`fixup_susfs.sh` 在本树是**空操作**——`fs/proc/base.c:103` 本来就有
 `<linux/dma-buf.h>`。脚本保留，因为它幂等且自检，而那个 fuzz 1 的 hunk 正好在同一个文件里。
@@ -71,17 +72,42 @@ Pixel 10）。这比旧流水线从 `android.googlesource.com` 下载好得多�
 这是**基线自己的行为，不是本文件的决定**。不要用 fragment 去「修正」——
 那会撞闸门 1。本地已验证 `CONFIG_MODULE_SIG_HASH="sha256"`。
 
-### 1.5 `.gitignore` 会吞掉 `.github/`
+### 1.5 `.gitignore` 吞掉 `.github/`（两次踩坑）
 
-本树 `.gitignore:13` 是裸 `.*`，和 6.6.82 那棵树一模一样。已追加反向规则：
+本树 `.gitignore` 有**两条**规则会吞掉 CI 目录：
 
+| 行 | 规则 | 吞掉什么 |
+|---|---|---|
+| 13 | `.*` | `.github/` 本身 |
+| 40 | `*.patch` | `.github/actions/*.patch` |
+
+已在文件末尾补上对应反向规则（`!.github/`、`!/.github/`、`!.github/actions/*.patch`）。
+
+**这两次失败都是静默的**：`git add -A` 跳过文件，`git status` 干干净净，
+工作流本身还是进了仓库，CI 要跑到好几步之后才报
+`No such file or directory` —— 而那个文件明明就在你刚提交的 diff 里。
+
+改动 `.gitignore` 后必须跑这个检查，10 个关键文件全过才算完：
+
+```bash
+for f in .github/workflows/build-onyx.yml \
+         .github/actions/droidspaces_sysvipc.patch \
+         .github/actions/libbpf_strchr_const.patch \
+         .github/actions/fixup_susfs.sh \
+         arch/arm64/configs/onyx_gki.fragment \
+         arch/arm64/configs/onyx_susfs.fragment \
+         arch/arm64/configs/onyx_debug_reduction.fragment \
+         anykernel/tools/busybox anykernel/anykernel.sh \
+         README-build-onyx.md; do
+  git check-ignore -q "$f" && echo "✗ IGNORED: $f" || echo "✓ $f"
+done
 ```
-!.github/
-!/.github/
-```
 
-验证：`git check-ignore -v .github/workflows/build-onyx.yml` 现在退出码为 1（未被忽略）。
-不加这两行，工作流永远进不了仓库。
+提交前再确认一次：
+
+```bash
+git ls-files --cached .github/actions/    # 三个文件都必须在
+```
 
 ### 1.6 新树独有：`GKI_DYNAMIC_TASK_STRUCT_SIZE`
 

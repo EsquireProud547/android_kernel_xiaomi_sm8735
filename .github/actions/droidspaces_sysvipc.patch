@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nullptr-t-oss <127822226+nullptr-t-oss@users.noreply.github.com>
+Date: Mon, 6 Oct 2026 09:18:23 +0800
+Subject: [PATCH] ABI: use ABI padding for SYSVIPC
+
+This commit allows us to enable CONFIG_SYSVIPC in defconfig without breaking kernel ABI.
+
+Root cause: enabling CONFIG_SYSVIPC normally injects `struct sysv_sem` / `struct sysv_shm`
+into the *middle* of task_struct, shifting every field that follows it. Vendor modules are
+built against the frozen GKI ABI, so they would read the wrong offsets and the device
+would bootloop. The fix moves those two fields onto the pre-existing ANDROID_KABI_RESERVE
+(6/7/8) u64 padding slots, which ANDROID_KABI_USE() overlays as a union:
+
+  - CONFIG_ANDROID_KABI_RESERVE=y (default y, drivers/android/Kconfig) makes the three
+    padding slots real `u64 android_kabi_reserved6/7/8` members, so total task_struct
+    size and all following offsets are unchanged.
+  - _ANDROID_KABI_REPLACE() emits a _Static_assert that sizeof(sysv_sem) <= 8 and that
+    alignment matches, so an overflow is a compile-time error, not a runtime bootloop.
+  - ANDROID_KABI_USE() is *not* gated on CONFIG_ANDROID_KABI, only the RESERVE side is --
+    which is why this works on a GKI tree that does not enforce kABI itself.
+  - The __GENKSYMS__ path keeps the original reserve fields, so genksyms still sees the
+    stable ABI.
+
+Regenerated for THIS tree (seventeen @ 6.6.142) with exact context: `patch -p1` applies
+it with no offset and no fuzz. Hunk line numbers moved from the 6.6.82 variant by +1
+(site 1) and +6 (site 2), but the surrounding code is byte-identical, so the change is a
+pure rebase.
+
+Note this tree ALSO has CONFIG_GKI_DYNAMIC_TASK_STRUCT_SIZE=y (with
+GKI_TASK_STRUCT_VENDOR_SIZE_MAX=1024). That is a different mechanism and does not
+interact with this patch: it allocates the vendor area *after* sizeof(struct task_struct)
+(include/linux/sched/task.h, `p + 1`), so it cannot shift any field inside the struct.
+ANDROID_KABI_RESERVE still operates on slots inside task_struct.
+
+The 6.6.82 variant of this patch lives in the kernel_xiaomi_sm8735 repository.
+
+Signed-off-by: nullptr-t-oss <127822226+nullptr-t-oss@users.noreply.github.com>
+---
+ include/linux/sched.h | 14 ++++++++++++++--
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1076,8 +1076,8 @@
+ 	struct nameidata		*nameidata;
+
+ #ifdef CONFIG_SYSVIPC
+-	struct sysv_sem			sysvsem;
+-	struct sysv_shm			sysvshm;
++	// struct sysv_sem			sysvsem;
++	// struct sysv_shm			sysvshm;
+ #endif
+ #ifdef CONFIG_DETECT_HUNG_TASK
+ 	unsigned long			last_switch_count;
+@@ -1530,9 +1530,15 @@
+ 	ANDROID_KABI_RESERVE(3);
+ 	ANDROID_KABI_RESERVE(4);
+ 	ANDROID_KABI_RESERVE(5);
++
++#ifdef CONFIG_SYSVIPC
++	ANDROID_KABI_USE(6, struct sysv_sem sysvsem);
++	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);
++#else
+ 	ANDROID_KABI_RESERVE(6);
+ 	ANDROID_KABI_RESERVE(7);
+ 	ANDROID_KABI_RESERVE(8);
++#endif
+
+ #ifdef CONFIG_RV
+ 	/*
