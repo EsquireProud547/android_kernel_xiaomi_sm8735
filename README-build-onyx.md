@@ -313,3 +313,49 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | 配置合成 | 官方 Kleaf + 三闸门 | **相同，未改动** |
 
 6.6.82 那棵树仍在维护，两套并行。
+
+---
+
+## 11. CI 实跑记录
+
+| 运行 | 结果 | 停在哪 |
+|---|---|---|
+| `logs_101154931030` | ❌ | 第 6 步：`.github/actions/libbpf_strchr_const.patch: No such file or directory` |
+| `logs_101161199225` | ❌ | 第 9 步：`clang: error: unknown argument: '-print-version-number'` |
+
+**第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
+一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。
+详见 §1.5。
+
+**第二次**：迁移时我加的一行版本检查用了 `-print-version-number`。这个参数
+**任何 clang 都不支持**（它是 GCC 的写法），用本机 `/usr/bin/clang 23.1.1`
+可以复现同样的错误。clang 本身没问题，CI 上跑出来是
+`Android (... based on r596125) clang version 22.0.2`。现在改成从
+`--version` 输出里 `sed` 解析，并保留「低于 17 就早失败」的原意
+（`arch/Kconfig:804` 的 `AUTOFDO_CLANG depends on CLANG_VERSION >= 170000`）。
+
+两次都失败在**我加的代码**上，而不是移植过来的代码上。
+
+### 教训
+
+新增任何一步"看起来无害的检查"之前，先在本机对**真实工具链**跑一遍。
+这两个 bug 的共同点是：我从没在本地执行过那两行。
+
+流水线跑到的位置（第二次）：
+
+```
+1-2  Set up / Checkout                     ok
+3    Fast cleanup + swap                   ok
+4    Install build dependencies            ok
+5    Install pahole for BTF                ok   pahole v1.31
+6    Patch libbpf                          ok   ← 上次失败点，这次通过
+7-8  Clang cache / download                ok
+9    Setup Clang                           ✗   ← 本次失败点
+10   ReSukiSU                              未到达
+11   SUSFS patches                         未到达
+13   Configure (三道闸门)                   未到达
+14   Build                                 未到达
+```
+
+未验证的部分：**ReSukiSU、SUSFS 的 CI 实跑、Configure（用的是 clang 23 而非
+r596125）、完整编译、BTF 断言、AK3 打包产物**。本地只验到闸门 3 为止。

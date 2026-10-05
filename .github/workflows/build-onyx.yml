@@ -219,11 +219,36 @@ jobs:
           chmod +x clang-${{ env.CLANG_VERSION }}/bin/clang
           echo "$PWD/clang-${{ env.CLANG_VERSION }}/bin" >> $GITHUB_PATH
           echo "CLANG_PATH=$PWD/clang-${{ env.CLANG_VERSION }}/bin" >> $GITHUB_ENV
-          $PWD/clang-${{ env.CLANG_VERSION }}/bin/clang --version | head -2
-          # AutoFDO and ThinLTO both need a modern clang; fail early and loudly
-          # if the toolchain is not what the config expects rather than letting
-          # olddefconfig silently drop CONFIG_AUTOFDO_CLANG later.
-          $PWD/clang-${{ env.CLANG_VERSION }}/bin/clang -print-version-number
+          CLANG_BIN="$PWD/clang-${{ env.CLANG_VERSION }}/bin/clang"
+          CLANG_RAW=$("$CLANG_BIN" --version)
+          echo "$CLANG_RAW" | head -2
+          echo "$CLANG_RAW" | head -2 | sed 's/^/  /'
+          # AutoFDO needs a modern clang and says so in Kconfig
+          # (arch/Kconfig:804: AUTOFDO_CLANG depends on CC_IS_CLANG &&
+          # CLANG_VERSION >= 170000). If the toolchain is too old, olddefconfig
+          # drops CONFIG_AUTOFDO_CLANG with no warning, so the loss would only
+          # surface as a mysterious gate 3 failure much later. Check it here
+          # instead, where the message can name the cause.
+          #
+          # The version is parsed out of --version, NOT queried with
+          # `-print-version-number`. No clang supports that flag -- it is a
+          # GCC-ism, and clang answers "error: unknown argument" and exits 1.
+          # That line killed the first run of this pipeline at this step.
+          # Reproduced locally against /usr/bin/clang 23.1.1 as well, so this
+          # is a general clang limitation, not something about the Android
+          # build. `-dumpversion` would also work but prints only the number,
+          # which reads badly in a log that should show the whole banner.
+          CLANG_MAJOR=$(echo "$CLANG_RAW" | sed -nE 's/.*clang version ([0-9]+)\..*/\1/p' | head -1)
+          if [ -z "$CLANG_MAJOR" ]; then
+            echo "::error::could not parse a clang version out of: $CLANG_RAW"
+            exit 1
+          fi
+          echo "CLANG_MAJOR=$CLANG_MAJOR"
+          if [ "$CLANG_MAJOR" -lt 17 ]; then
+            echo "::error::clang $CLANG_MAJOR is too old -- CONFIG_AUTOFDO_CLANG needs >= 17"
+            exit 1
+          fi
+          echo "CLANG_STATUS=ok (major $CLANG_MAJOR)" >> $GITHUB_ENV
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -733,7 +758,7 @@ jobs:
           | Item | Value |
           |------|-------|
           | **Kernel** | Linux ${{ env.KERNEL_RELEASE }} (Xiaomi SM8735 / onyx, branch `seventeen`) |
-          | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}) |
+          | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}, LLVM ${{ env.CLANG_MAJOR }}) — ${{ env.CLANG_STATUS }} |
           | **Config base** | `gki_defconfig` + `onyx_gki.fragment` (+ vendor =y, + susfs) |
           | **Config gates** | 3/3 passed (no overrides, no warnings, all fragments applied) |
           | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
