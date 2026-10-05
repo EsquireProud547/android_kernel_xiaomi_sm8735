@@ -1,0 +1,86 @@
+#
+# onyx_gki.fragment - Capybara tuning layered onto the stock Android GKI base
+#
+# Tree: seventeen @ 6.6.142 (Xiaomi SM8735 / onyx). Migrated from the
+# kernel_xiaomi_sm8735 tree, which is android15-6.6 @ 6.6.82. Every symbol
+# below was re-verified to exist in this tree's Kconfig on 6.6.142.
+#
+# Synthesis order mirrors the official Kleaf mixed-build (build.config.msm.perf
+# + build.config.msm.common):
+#
+#   gki_defconfig                 (stock GKI 6.6.142 base, 796 lines)
+#     + onyx_gki.fragment         (this file: Capybara tuning)
+#     + vendor/onyx_perf.config   (=y entries only, filtered at build time)
+#     + onyx_susfs.fragment       (only when enable_susfs is true)
+#   -> merge_config.sh -m -r -y  -> make <defconfig>
+#
+# RULES for editing this file (they are enforced by the three gates that
+# build-onyx.yml replicates from build.config.msm.common):
+#
+#   1. Never set a symbol the base already has as =y or =m. merge_config
+#      reports it as an override and the build fails ("Detected overridden
+#      config!").
+#   2. Never set a symbol whose dependencies will not be met. olddefconfig
+#      drops it silently, the diffconfig gate then fails the build
+#      ("Defconfig fragment did not apply as expected").
+#
+# In short: every line here is a promise that the kernel will honour.
+#
+# Verified against this tree's gki_defconfig by line number:
+#   98  CONFIG_CFI_CLANG=y     -> rules out FullLTO
+#   745 CONFIG_CRYPTO_LZ4=y    -> ZRAM_DEF_COMP_LZ4 dependency is satisfied
+#   (no CONFIG_HZ_* line)      -> HZ_300 cannot collide with an explicit value
+#   (no CONFIG_LTO_* line)     -> LTO_NONE is a Kconfig default, not a defconfig
+#                                 value, so merge_config does not see an override
+#
+
+# --- Timer frequency -------------------------------------------------------
+# GKI default is HZ_250; the stock GKI fragment (which lives in the external
+# build/kernel repo and is NOT in this tree) is what normally picks the value.
+CONFIG_HZ_300=y
+
+# --- Link Time Optimization ------------------------------------------------
+# ThinLTO, not FullLTO: CONFIG_CFI_CLANG=y (KCFI, gki_defconfig:98) and
+# FullLTO's type-id reassignment conflict. See gki-clo commit 98763e396491
+# "Revert to ThinLTO: FullLTO conflicts with KCFI type IDs".
+CONFIG_LTO_CLANG_THIN=y
+
+# --- zram compression ------------------------------------------------------
+# GKI default is lzo-rle. lz4 is materially faster to decompress, which is
+# what matters on the zram hot path under memory pressure.
+# CONFIG_CRYPTO_LZ4 is already =y in the GKI base (gki_defconfig:745), so the
+# dependency holds.
+#
+# 6.6.142 also turns on ZRAM_MULTI_COMP and ZRAM_WRITEBACK in the base. Both
+# are additive: ZRAM_DEF_COMP_LZ4 still selects the default algorithm used when
+# no explicit zram.recompress_algorithm is set at boot, so this line still does
+# what it says.
+CONFIG_ZRAM_DEF_COMP_LZ4=y
+
+# --- Droidspaces (POSIX IPC for the container runtime) ---------------------
+# CONFIG_SYSVIPC requires .github/actions/droidspaces_sysvipc.patch: the plain
+# upstream config injects sysvsem/sysvshm into the middle of task_struct and
+# shifts every following field, which breaks vendor modules. The patch moves
+# them onto the ANDROID_KABI_RESERVE(6/7/8) padding instead.
+# CONFIG_ANDROID_KABI_RESERVE defaults to y (drivers/android/Kconfig), so the
+# union overlay keeps task_struct size and all trailing offsets unchanged.
+#
+# This tree also has CONFIG_GKI_DYNAMIC_TASK_STRUCT_SIZE=y with
+# GKI_TASK_STRUCT_VENDOR_SIZE_MAX=1024. That is a *separate* mechanism and does
+# not conflict: it allocates the vendor area after sizeof(struct task_struct)
+# (include/linux/sched/task.h, `android_task_vendor_data()` returns `p + 1`), so
+# it cannot shift anything inside the struct. ANDROID_KABI_RESERVE still
+# operates on slots inside task_struct.
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_IPC_NS=y
+
+# --- Namespaces and container compatibility --------------------------------
+# PID_NS + devtmpfs are what a container runtime expects to exist.
+CONFIG_PID_NS=y
+CONFIG_DEVTMPFS=y
+
+# --- Optional but recommended: docker/proot compat + NixOS tmpfs ACLs ------
+CONFIG_USER_NS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y

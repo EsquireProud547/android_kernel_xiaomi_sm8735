@@ -175,3 +175,11 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# CI configuration. Line 13 above is a bare `.*` rule, which silently swallows
+# this whole directory -- `.github/` matched it and the workflow never reached
+# the repository. The negations below re-admit it. Verified with
+#   git check-ignore -v .github/workflows/build-onyx.yml
+# which must print nothing (or only a negated rule) after this change.
+!.github/
+!/.github/
