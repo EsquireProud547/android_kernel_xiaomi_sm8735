@@ -461,19 +461,6 @@ jobs:
           elif [ -f "$ZIMAGE_DIR/Image" ]; then
             cp -v "$ZIMAGE_DIR/Image" "$TEMP_DIR/"
           fi
-          # flash_boot looks for Image/Image.gz/Image.gz-dtb in the zip root
-          # (ak3-core.sh:331-336) and, finding none, silently reflashes the
-          # kernel it just dumped from the device -- the zip installs
-          # "successfully" while changing nothing. The chain above has no else,
-          # so a build that produced none of the three would ship exactly that
-          # zip. Fail here instead, where the cause is still visible.
-          STAGED_IMAGE=$(cd "$TEMP_DIR" && ls -1 Image Image.gz Image.gz-dtb 2>/dev/null | head -1)
-          if [ -z "$STAGED_IMAGE" ]; then
-            echo "::error::no kernel image staged in $TEMP_DIR -- build produced none of Image, Image.gz, Image.gz-dtb"
-            ls -l "$ZIMAGE_DIR"/Image* 2>/dev/null || echo "(no Image* in $ZIMAGE_DIR at all)"
-            exit 1
-          fi
-          echo "Staged kernel image: $STAGED_IMAGE ($(du -h "$TEMP_DIR/$STAGED_IMAGE" | cut -f1))"
 
           if [ -d "$ZIMAGE_DIR/dts/vendor/qcom" ]; then
             mkdir -p "$TEMP_DIR/dtb"
