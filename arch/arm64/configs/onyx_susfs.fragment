@@ -1,17 +1,40 @@
 #
 # onyx_susfs.fragment - ReSukiSU + SUSFS, applied only when enable_susfs=true
 #
-# These symbols only exist once build-onyx.yml has applied
-#   kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-# from susfs4ksu (branch gki-android15-6.6, tracked at its branch head -- not
-# pinned, so upstream fixes land without editing this repository). If the patch
-# stops applying, olddefconfig drops both symbols below and gate 3 fails the
-# build -- which is the intended behaviour: a silently dead SUSFS is worse than
-# a failed build.
+# WHERE THESE SYMBOLS COME FROM -- corrected after reading the sources.
+#
+# This file used to say the symbols only exist once
+# 10_enable_susfs_for_ksu.patch had been applied from susfs4ksu. That is
+# wrong, and so was the workflow's implied dependency on it: that patch is
+# never applied by this pipeline, and it does not need to be.
+#
+# The actual chain is:
+#
+#   ReSukiSU's kernel/setup.sh clones github.com/Baka-SU/BakaSU, symlinks its
+#   kernel/ directory to drivers/kernelsu, and wires it into drivers/Makefile
+#   and drivers/Kconfig. Baka-SU/BakaSU is itself a SUSFS-enabled KernelSU
+#   fork: its kernel/Kconfig already contains `config KSU_SUSFS` plus all nine
+#   sub-options (verified by counting: 10 `config KSU_SUSFS*` definitions).
+#
+#   susfs4ksu's 50_add_susfs_in_gki-android15-6.6.patch then supplies the
+#   kernel-side half -- hooks in fs/, drivers/input/, security/selinux/,
+#   kernel/kallsyms.c, kernel/reboot.c, kernel/sys.c -- plus the files this
+#   pipeline copies in (include/linux/susfs*.h, fs/susfs.c). That is the only
+#   susfs4ksu patch applied, and it is applied to the kernel tree, not to
+#   KernelSU.
+#
+# So the Kconfig side comes from BakaSU and the kernel hooks come from
+# susfs4ksu. Applying 10_enable_susfs_for_ksu.patch on top of current
+# Baka-SU/BakaSU main does not work anyway -- tried it: over a hundred hunks
+# FAIL, because BakaSU has absorbed (or diverged from) what that patch adds.
+#
+# If either half breaks, olddefconfig drops the symbols below and gate 3 fails
+# the build. That is the intended behaviour: a silently dead SUSFS is worse
+# than a failed build.
 #
 # NOTE on the branch name: this tree is 6.6.142 on branch `seventeen`, and
 # susfs4ksu has no android17-6.6 branch. Its only 6.6 branch is
-# `gki-android15-6.6`. That patch was verified to apply to 6.6.142 anyway:
+# `gki-android15-6.6`. That patch was verified to apply to 6.6.142:
 # 19 hunks, 0 failures, exit 0, with exactly one hunk (fs/proc/base.c #4)
 # landing at fuzz 1. The build-onyx.yml step records the actual commit it used
 # in SUSFS_STATUS, and gate 3 fails the build if the symbols go missing -- so a

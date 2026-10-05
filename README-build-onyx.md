@@ -326,7 +326,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101188129967` | ✅ | 19/19 步全过，产物 `Onyx-Kernel-v4-20261005.zip`（19M，97 个模块） |
 | `logs_101213666886` | ✅ | 19/19 步全过，**刷入后设备正常开机**（LTO/AutoFDO/裁剪 三者全关） |
 
-前三次分别对应本文 §1.5、§11（第二次）、§13（第三次）。第四次见 §14、§15；第五次（开机成功）见 §12。
+前三次分别对应本文 §1.5、§11（第二次）、§15（第三次）。第四次见 §16、§17；第五次（开机成功）见 §12。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
 一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
@@ -546,7 +546,122 @@ bootloader 刷屏（内核没跑起来 → 问题在打包/加载，不在配置
 
 ---
 
-## 13. 上游回归：extract-cert 在 stock OpenSSL 下编不过
+## 13. Configure 逻辑搬出工作流
+
+GitHub 拒绝了第六次提交：
+
+```
+Invalid workflow file: .github/workflows/build-onyx.yml#L1
+(Line: 390, Col: 14): Exceeded max expression length 21000
+```
+
+**GitHub 把整个 `run:` 块当作一个待展开的表达式，上限 21000 字符。**
+
+| 版本 | Configure 的 `run` 块 | 限制 |
+|---|---|---|
+| 第四次（可用） | 20,803 | 21,000 |
+| 第六次（被拒） | **22,092** | 21,000 |
+
+上一版**只差 197 个字符**就贴在天花板上了。也就是说这不是"某次改坏了"，
+而是**任何一次加注释都会炸**——包括我给裁剪分组加的那些说明。
+
+### 修法
+
+把 Configure 的全部逻辑移到 [`.github/actions/configure-kernel.sh`](.github/actions/configure-kernel.sh)，
+步骤只剩 17 行：
+
+```yaml
+- name: Configure kernel (official Kleaf-style synthesis)
+  env:
+    ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+    ...
+  run: .github/actions/configure-kernel.sh
+```
+
+`inputs.*` 通过 `env:` 传入，脚本里用 `$ENABLE_SUSFS` 这样的普通 shell 变量。
+最大的步骤现在只剩 Package 的 3075 字符。
+
+### 副作用比预期好：现在能本地跑了
+
+脚本化之后可以做之前一直没能做的验证——**在本地完整复现 Configure**：
+
+```bash
+# 1. 复现 CI 的补丁序列
+patch -p1 < .github/actions/libbpf_strchr_const.patch
+patch -p1 < .github/actions/droidspaces_sysvipc.patch
+# 2. ReSukiSU：克隆 Baka-SU/BakaSU，软链到 drivers/kernelsu，接进 Makefile/Kconfig
+git clone --depth 1 https://github.com/Baka-SU/BakaSU.git KernelSU
+ln -sfn ../KernelSU/kernel drivers/kernelsu
+# 3. SUSFS
+patch -p1 < .../50_add_susfs_in_gki-android15-6.6.patch
+# 4. 跑
+ENABLE_SUSFS=true ... ./.github/actions/configure-kernel.sh
+```
+
+跑出来的结果与 CI 完全一致：`KSU_SUSFS=y`、`LTO_NONE=y`、三道闸门全过。
+
+**这一跑就抓出了两个 bug，见下一节。**
+
+---
+
+## 14. 搬出工作流后立刻抓到的两个 bug
+
+### ① 裁剪审计会把 `UAPI_HEADER_TEST` 误判为越界
+
+用默认的 `reduce_debug=true` 跑，审计直接失败：
+
+```
+::error::debug reduction removed symbols that are not debug features
+ UAPI_HEADER_TEST y -> n
+```
+
+审计拿「应用**所有**覆盖之前的合并 defconfig」当参考，所以参考配置里
+`CONFIG_UAPI_HEADER_TEST` 还是 `=y`，而实际配置是 `=n`——于是这个
+**根本不属于裁剪**的符号被算成了裁剪的代价。
+
+**这条路径从来没跑过**：前面所有运行要么早于审计的加入，要么
+`reduce_debug=false` 跳过了它。而 `reduce_debug` 的默认值是 `true`，
+**下一次默认构建就会炸**。
+
+修法：参考配置也要应用同一批非裁剪覆盖。
+
+### ② make 失败时只显示 `tail -5`
+
+闸门 2 里 `make ... | tee "$MERGE_OUT" | tail -5`，失败时只 `exit 1`。
+而 kconfig 失败的最后五行永远是 make 的退出链：
+
+```
+make[2]: *** [../scripts/kconfig/Makefile:94：onyx_gki_defconfig] 错误 1
+make[1]: *** [Makefile:252：__sub-make] 错误 2
+```
+
+**一个有用的信息都没有。** 我在本地复现时亲眼看到了这个现象。
+现在失败时改为 grep 完整日志里的 `error:` / `warning:` / `No rule to make` 等行，
+并附上 20 行 tail 兜底。
+
+### 顺带纠正一处文档错误
+
+`onyx_susfs.fragment` 一直写着"`CONFIG_KSU_SUSFS` 来自 susfs4ksu 的
+`10_enable_susfs_for_ksu.patch`"。**这是错的，而且我们的工作流从来没应用过那个补丁。**
+
+实际链路是：
+
+```
+ReSukiSU setup.sh → clone Baka-SU/BakaSU → kernel/ 软链到 drivers/kernelsu
+  └─ Baka-SU/BakaSU 本身就是带 SUSFS 的 KernelSU fork
+     它的 kernel/Kconfig 已经包含 config KSU_SUSFS + 9 个子选项（实测 10 处定义）
+susfs4ksu 50_add_susfs → 只提供内核侧那一半
+  └─ fs/、drivers/input/、security/selinux/、kernel/kallsyms.c、reboot.c、sys.c
+     以及拷贝进来的 include/linux/susfs*.h 与 fs/susfs.c
+```
+
+在当前 Baka-SU/BakaSU main 上试打 `10_enable_susfs_for_ksu.patch`：
+**一百多个 hunk 失败**——BakaSU 已经吸收/偏离了那个补丁要加的东西。
+所以不应用它是对的，但文档归因错了。已改。
+
+---
+
+## 15. 上游回归：extract-cert 在 stock OpenSSL 下编不过
 
 第三次运行前 14 步全过，Build 死在 `certs/extract-cert.c:152`：
 
@@ -633,7 +748,7 @@ error: use of undeclared identifier 'key_pass'
 
 ---
 
-## 14. 首次成功构建（logs_101188129967）
+## 16. 首次成功构建（logs_101188129967）
 
 第四次运行，19 步全过。**这是本流水线在 6.6.142 上的第一次完整构建。**
 
@@ -656,7 +771,7 @@ make 层面的，无害。
 
 ---
 
-## 15. 配置审计：我们相对纯基线改了什么
+## 17. 配置审计：我们相对纯基线改了什么
 
 这是最值得看的一节。用 `diffconfig` 对比「`gki_defconfig` 单独生成的 .config」
 与「我们完整流水线生成的 .config」，**全部 52 行差异**：
@@ -742,7 +857,7 @@ CONFIG_MODULE_SIG_PROTECT=y
 
 ---
 
-## 16. 新增：裁剪审计（把注释变成强制检查）
+## 18. 新增：裁剪审计（把注释变成强制检查）
 
 闸门 1–3 只检查**我们要求的东西有没有生效**，没有一个能看见「没要求却悄悄丢掉」
 的符号——`olddefconfig` 会安静地丢弃它，然后内核照样编译成功。
