@@ -24,6 +24,18 @@ name: Build Onyx Kernel
 #       - libbpf_strchr_const.patch   libbpf.c +14 lines, Makefile:89 -> :88
 #     Both verified to apply with `patch -p1` at ZERO offset and ZERO fuzz.
 #
+#   * A third patch, extract_cert_pkcs11_engine.patch, fixes an upstream
+#     regression in 6.6.142 rather than a porting difference. Upstream
+#     64282a745897 wrapped key_pass's declaration in '#ifdef USE_PKCS11_ENGINE'
+#     but left its only use behind '#ifdef OPENSSL_IS_BORINGSSL'. Nothing in
+#     kbuild defines USE_PKCS11_ENGINE, so certs/extract-cert.c -- a host tool,
+#     built because CONFIG_MODULE_SIG_KEY is set -- cannot compile at all
+#     against a stock OpenSSL. That commit is present in 6.6.142 and absent in
+#     6.6.82, which is why the other tree builds and this one did not. The
+#     step below compiles the tool immediately after patching it, so a future
+#     upstream fix or a new break shows up in seconds instead of 1500 objects
+#     into the build.
+#
 #   * SUSFS still comes from susfs4ksu's `gki-android15-6.6` branch. There is no
 #     android17-6.6 branch, but that patch does apply to 6.6.142 (19 hunks, 0
 #     failures, 1 hunk at fuzz 1), so the branch is now pinned to a commit and
@@ -197,6 +209,40 @@ jobs:
             echo "already patched"
           else
             patch -p1 --forward < .github/actions/libbpf_strchr_const.patch
+          fi
+
+      - name: Patch extract-cert for stock OpenSSL
+        run: |
+          # certs/extract-cert.c is a HOST tool, built because gki_defconfig sets
+          # CONFIG_MODULE_SIG_KEY="certs/signing_key.pem". It does not compile
+          # at 6.6.142:
+          #
+          #   certs/extract-cert.c:152:7: error: use of undeclared identifier 'key_pass'
+          #
+          # Upstream commit 64282a745897 wrapped key_pass's declaration in
+          # '#ifdef USE_PKCS11_ENGINE' to silence -Wunused-but-set-global,
+          # reasoning that key_pass "is only used with the OpenSSL engine API".
+          # The use, however, sits in a branch guarded only by
+          # '#ifdef OPENSSL_IS_BORINGSSL'. Nothing in the kbuild system defines
+          # USE_PKCS11_ENGINE, so with a stock (non-BoringSSL) host OpenSSL the
+          # declaration is compiled out while its only use is compiled in.
+          #
+          # Not gated on enable_btf: this is the module signing path, not BPF.
+          # Not allowed to fail silently either -- without it the build dies in
+          # certs/ ~1500 objects in.
+          if grep -q 'PKCS#11 extraction requires USE_PKCS11_ENGINE' certs/extract-cert.c; then
+            echo "already patched (upstream may have fixed it)"
+          else
+            patch -p1 --forward < .github/actions/extract_cert_pkcs11_engine.patch
+          fi
+          # Prove the tool actually builds here, with the host OpenSSL this
+          # runner has, instead of finding out 1500 objects into the build.
+          if gcc -o /dev/null certs/extract-cert.c -lcrypto 2>/tmp/extract-cert.err; then
+            echo "  extract-cert.c compiles against the host OpenSSL"
+          else
+            echo "::error::extract-cert.c still does not compile:"
+            cat /tmp/extract-cert.err
+            exit 1
           fi
 
       - name: Cache Clang toolchain

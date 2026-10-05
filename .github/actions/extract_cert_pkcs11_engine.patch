@@ -1,0 +1,127 @@
+From: nullptr-t-oss <127822226+nullptr-t-oss@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 02:40:00 +0800
+Subject: [PATCH] certs: fix extract-cert failing to build with a stock OpenSSL
+
+extract-cert is a host tool, built whenever CONFIG_MODULE_SIG_KEY is set
+-- which gki_defconfig does (certs/signing_key.pem). It fails to compile:
+
+  certs/extract-cert.c:152:7: error: use of undeclared identifier 'key_pass'
+  certs/extract-cert.c:153:42: error: use of undeclared identifier 'key_pass'
+
+This is an upstream regression, not something in this pipeline.
+
+Upstream commit 64282a745897 ("extract-cert: Wrap key_pass with
+'#ifdef USE_PKCS11_ENGINE'") wrapped the declaration at line 81 and the
+assignment in main() with #ifdef USE_PKCS11_ENGINE, to silence a new
+-Wunused-but-set-global warning under clang. Its rationale was that
+"after commit 558bdc45dfb2, key_pass is only used with the OpenSSL
+engine API, not the new provider API".
+
+But the use was left in a different branch. In this tree the pkcs11:
+branch is guarded only by #ifdef OPENSSL_IS_BORINGSSL:
+
+  } else if (!strncmp(cert_src, "pkcs11:", 7)) {
+  #ifdef OPENSSL_IS_BORINGSSL
+          ERR(1, "BoringSSL does not support extracting from PKCS#11");
+          exit(1);
+  #else
+          ...
+          if (key_pass)
+                  ERR(!ENGINE_ctrl_cmd_string(e, "PIN", key_pass, 0), ...);
+  #endif
+
+So for any host OpenSSL that is not BoringSSL, USE_PKCS11_ENGINE is not
+defined (nothing in the kbuild system defines it -- grep over all
+Makefiles finds no mention) while the branch that uses key_pass is
+compiled, and the tool cannot be built at all. Before 64282a745897 the
+declaration was unconditional and this compiled fine; that commit is
+present in 6.6.142 and absent in 6.6.82, which is why the 6.6.82 tree
+builds and this one does not.
+
+This turns the guard into a three-way choice, which is what the upstream
+commit clearly intended:
+
+  #if defined(OPENSSL_IS_BORINGSSL)          unchanged behaviour
+  #elif defined(USE_PKCS11_ENGINE)           unchanged behaviour
+  #else                                      clear error, not a compile error
+
+The new #else matters. Simply deleting the engine branch would let the
+"pkcs11:" prefix match the else-if and then fall out of the if/else chain
+with no output file written, which would leave signing_key.x509 empty
+and only fail much later. Erroring out at extraction time names the
+cause.
+
+drain_openssl_errors() is guarded as well. It is called only from the
+same engine branch (lines 145 and 149), so once that branch is compiled
+out it becomes an unused static function. The current host build happens
+to pass no -Wall/-Werror to hostprogs (KBUILD_HOSTCFLAGS is
+$(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS) and HOSTCFLAGS
+is unset), so this is only a warning today -- but it is the same latent
+breakage, one compiler flag away from fatal, and leaving it would just
+mean this patch needs redoing later.
+
+Not affected by the new #else in practice: this kernel's signing key is
+a plain file path, so the "pkcs11:" prefix is never matched.
+
+Verified on this machine against OpenSSL 3.6.5, in all three
+preprocessor configurations:
+
+  stock OpenSSL, USE_PKCS11_ENGINE undefined   compiles clean with no
+                                              flags, with -Wall, and with
+                                              -Wall -Wextra -Werror
+  USE_PKCS11_ENGINE defined                   compiles clean, no flags
+                                              and with -Wall
+  OPENSSL_IS_BORINGSSL defined                compiles clean
+
+The "undeclared identifier" error reproduces on the unpatched file with
+`gcc -o /dev/null certs/extract-cert.c -lcrypto` (exit 1, line 152).
+
+Signed-off-by: nullptr-t-oss <127822226+nullptr-t-oss@users.noreply.github.com>
+---
+ certs/extract-cert.c | 23 ++++++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+--- a/certs/extract-cert.c
++++ b/certs/extract-cert.c
+@@ -56,7 +56,8 @@
+ 	}
+ }
+
+-#ifndef OPENSSL_IS_BORINGSSL
++#if !defined(OPENSSL_IS_BORINGSSL) && defined(USE_PKCS11_ENGINE)
++/* Only the ENGINE-based PKCS#11 path calls this. */
+ static void drain_openssl_errors(void)
+ {
+ 	const char *file;
+@@ -128,10 +129,10 @@
+ 		fclose(f);
+ 		exit(0);
+ 	} else if (!strncmp(cert_src, "pkcs11:", 7)) {
+-#ifdef OPENSSL_IS_BORINGSSL
++#if defined(OPENSSL_IS_BORINGSSL)
+ 		ERR(1, "BoringSSL does not support extracting from PKCS#11");
+ 		exit(1);
+-#else
++#elif defined(USE_PKCS11_ENGINE)
+ 		ENGINE *e;
+ 		struct {
+ 			const char *cert_id;
+@@ -154,6 +155,18 @@
+ 		ENGINE_ctrl_cmd(e, "LOAD_CERT_CTRL", 0, &parms, NULL, 1);
+ 		ERR(!parms.cert, "Get X.509 from PKCS#11");
+ 		write_cert(parms.cert);
++#else
++		/* The ENGINE-based PKCS#11 path above is the only user of
++		 * key_pass, and upstream commit 64282a745897 wrapped
++		 * key_pass's declaration in '#ifdef USE_PKCS11_ENGINE' while
++		 * leaving that branch guarded only by
++		 * '#ifdef OPENSSL_IS_BORINGSSL'. Nothing in the build system
++		 * defines USE_PKCS11_ENGINE, so with a stock OpenSSL host
++		 * build this file cannot be compiled at all. See
++		 * .github/actions/extract_cert_pkcs11_engine.patch.
++		 */
++		ERR(1, "PKCS#11 extraction requires USE_PKCS11_ENGINE");
++		exit(1);
+ #endif
+ 	} else {
+ 		BIO *b;

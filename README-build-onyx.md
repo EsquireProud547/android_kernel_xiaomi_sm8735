@@ -322,10 +322,10 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 |---|---|---|
 | `logs_101154931030` | ❌ | 第 6 步：`.github/actions/libbpf_strchr_const.patch: No such file or directory` |
 | `logs_101161199225` | ❌ | 第 9 步：`clang: error: unknown argument: '-print-version-number'` |
+| `logs_101178482014` | ❌ | 第 15 步 Build：`certs/extract-cert.c:152: error: use of undeclared identifier 'key_pass'` |
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
-一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。
-详见 §1.5。
+一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
 
 **第二次**：迁移时我加的一行版本检查用了 `-print-version-number`。这个参数
 **任何 clang 都不支持**（它是 GCC 的写法），用本机 `/usr/bin/clang 23.1.1`
@@ -334,28 +334,118 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 `--version` 输出里 `sed` 解析，并保留「低于 17 就早失败」的原意
 （`arch/Kconfig:804` 的 `AUTOFDO_CLANG depends on CLANG_VERSION >= 170000`）。
 
-两次都失败在**我加的代码**上，而不是移植过来的代码上。
+**第三次**：**上游回归**，见 §11。
+
+### 第三次运行的配置结果（全部正确）
+
+```
+[gate 1/3] no overridden values
+[gate 2/3] no kconfig warnings, out/.config produced
+[gate 3/3] every requested symbol took effect (9 unset-but-invisible symbols ignored)
+```
+
+| 符号 | 值 | | 符号 | 值 |
+|---|---|---|---|---|
+| `CONFIG_KSU` | y | | `CONFIG_SYSVIPC` | y |
+| `CONFIG_KSU_SUSFS` | y | | `CONFIG_POSIX_MQUEUE` | y |
+| `CONFIG_HZ` | 300 | | `CONFIG_IPC_NS` | y |
+| `CONFIG_LTO_CLANG_THIN` | y | | `CONFIG_PID_NS` | y |
+| `CONFIG_CFI_CLANG` | y | | `CONFIG_DEVTMPFS` | y |
+| `CONFIG_ZRAM_DEF_COMP` | `"lz4"` | | `CONFIG_ANDROID_KABI_RESERVE` | y |
+| `CONFIG_AUTOFDO_CLANG` | y | | `CONFIG_GKI_DYNAMIC_TASK_STRUCT_SIZE` | y |
+| `CONFIG_MODVERSIONS` | y | | `CONFIG_DEBUG_INFO_BTF` | y |
+| `CONFIG_DEBUG_INFO_BTF_MODULES` | y | | `CONFIG_PAHOLE_VERSION` | 131 |
+| `CONFIG_MODULE_SIG_HASH` | `"sha256"` | | `CONFIG_MODULE_SIG_PROTECT` | y |
+
+ReSukiSU `applied (main)`、SUSFS `applied (CONFIG_KSU_SUSFS=y)`、
+Droidspaces `applied`、AutoFDO `enabled (in-tree profile, 4.0M)`。
+
+本地用 clang 23 预测的三项全部命中：BTF 保住、AutoFDO 保住、
+模块签名是 SHA-256 而非 512。
+
+---
+
+## 12. 上游回归：extract-cert 在 stock OpenSSL 下编不过
+
+第三次运行前 14 步全过，Build 死在 `certs/extract-cert.c:152`：
+
+```
+error: use of undeclared identifier 'key_pass'
+error: use of undeclared identifier 'key_pass'
+```
+
+**这不是流水线的问题，是 6.6.142 里一个真实的上游 bug。**
+
+`extract-cert` 是宿主工具，`gki_defconfig` 设了
+`CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"`，所以一定会编。
+
+### 怎么坏的
+
+上游提交 `64282a745897 "extract-cert: Wrap key_pass with
+'#ifdef USE_PKCS11_ENGINE'"` 为了消 clang 的 `-Wunused-but-set-global`
+警告，把 `key_pass` 的**声明**和 `main()` 里的**赋值**都包进了
+`#ifdef USE_PKCS11_ENGINE`。它的理由是"key_pass 只在 OpenSSL engine API
+里用"。
+
+但**用处留在了另一个分支**。`pkcs11:` 分支只被 `OPENSSL_IS_BORINGSSL` 包着：
+
+```c
+} else if (!strncmp(cert_src, "pkcs11:", 7)) {
+#ifdef OPENSSL_IS_BORINGSSL
+        ERR(1, "BoringSSL does not support extracting from PKCS#11");
+#else
+        ...
+        if (key_pass)                 /* ← 声明已被条件编译掉 */
+```
+
+而**整个 kbuild 系统里没有任何地方定义 `USE_PKCS11_ENGINE`**
+（grep 全部 Makefile 零命中）。所以只要宿主 OpenSSL 不是 BoringSSL，
+声明被编掉、用法被编进来，这个文件根本编不出来。
+
+`64282a745897` 在 6.6.142 里有、在 6.6.82 里没有——这就是 6.6.82 那棵树
+能编而这棵不能的原因。
+
+### 修法
+
+`.github/actions/extract_cert_pkcs11_engine.patch`，把守卫改成三选一，
+这正是上游提交本来的意图：
+
+```c
+#if defined(OPENSSL_IS_BORINGSSL)      行为不变
+#elif defined(USE_PKCS11_ENGINE)       行为不变
+#else                                  明确报错，而不是编译错误
+```
+
+新增的 `#else` 有意义：光删掉 engine 分支的话，`"pkcs11:"` 前缀会匹配上
+`else if` 然后从 if/else 链里掉出去，**什么都不写**，`signing_key.x509`
+变成空文件，要到很后面才炸。在提取阶段就报错能指名原因。
+
+`drain_openssl_errors()` 也一并加了守卫——它只被同一个 engine 分支调用
+（145、149 行），分支被编掉后它就成了未使用的 static 函数。当前宿主构建
+没给 hostprogs 传 `-Wall`/`-Werror`（`KBUILD_HOSTCFLAGS` 只含
+`$(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)`，而
+`HOSTCFLAGS` 未设置），所以今天只是个警告，但离致命只差一个编译选项。
+
+本流水线用不到新的 `#else`：签名密钥是普通文件路径，`"pkcs11:"` 永远匹配不上。
+
+### 验证
+
+本机 OpenSSL 3.6.5，三种预处理组合全过：
+
+| 组合 | 无标志 | `-Wall` | `-Wall -Wextra -Werror` |
+|---|---|---|---|
+| stock OpenSSL（我们的 CI） | ✅ | ✅ | ✅ |
+| `USE_PKCS11_ENGINE` 已定义 | ✅ | ✅ | — |
+| `OPENSSL_IS_BORINGSSL` 已定义 | ✅ | — | — |
+
+未打补丁的文件用 `gcc -o /dev/null certs/extract-cert.c -lcrypto`
+可复现同样的错误（exit 1，152 行）。
+
+工作流里加了一步在**应用补丁后立刻编译验证**，不再等 1500 个 object
+编到 `certs/` 才发现。该步幂等（grep 到已打补丁就跳过），本地在干净树
+和已打补丁的树上各跑一遍都是 exit 0。
 
 ### 教训
 
-新增任何一步"看起来无害的检查"之前，先在本机对**真实工具链**跑一遍。
-这两个 bug 的共同点是：我从没在本地执行过那两行。
-
-流水线跑到的位置（第二次）：
-
-```
-1-2  Set up / Checkout                     ok
-3    Fast cleanup + swap                   ok
-4    Install build dependencies            ok
-5    Install pahole for BTF                ok   pahole v1.31
-6    Patch libbpf                          ok   ← 上次失败点，这次通过
-7-8  Clang cache / download                ok
-9    Setup Clang                           ✗   ← 本次失败点
-10   ReSukiSU                              未到达
-11   SUSFS patches                         未到达
-13   Configure (三道闸门)                   未到达
-14   Build                                 未到达
-```
-
-未验证的部分：**ReSukiSU、SUSFS 的 CI 实跑、Configure（用的是 clang 23 而非
-r596125）、完整编译、BTF 断言、AK3 打包产物**。本地只验到闸门 3 为止。
+前两次是我自己写的代码没在本地跑过。第三次是**上游 bug**——这类问题
+只能靠"真去编译一次"发现，静态阅读发现不了。
