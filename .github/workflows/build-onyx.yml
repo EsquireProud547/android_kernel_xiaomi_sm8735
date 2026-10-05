@@ -221,7 +221,6 @@ jobs:
           echo "CLANG_PATH=$PWD/clang-${{ env.CLANG_VERSION }}/bin" >> $GITHUB_ENV
           CLANG_BIN="$PWD/clang-${{ env.CLANG_VERSION }}/bin/clang"
           CLANG_RAW=$("$CLANG_BIN" --version)
-          echo "$CLANG_RAW" | head -2
           echo "$CLANG_RAW" | head -2 | sed 's/^/  /'
           # AutoFDO needs a modern clang and says so in Kconfig
           # (arch/Kconfig:804: AUTOFDO_CLANG depends on CC_IS_CLANG &&
