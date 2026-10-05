@@ -324,8 +324,9 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101161199225` | ❌ | 第 9 步：`clang: error: unknown argument: '-print-version-number'` |
 | `logs_101178482014` | ❌ | 第 15 步 Build：`certs/extract-cert.c:152: error: use of undeclared identifier 'key_pass'` |
 | `logs_101188129967` | ✅ | 19/19 步全过，产物 `Onyx-Kernel-v4-20261005.zip`（19M，97 个模块） |
+| `logs_101213666886` | ✅ | 19/19 步全过，**刷入后设备正常开机**（LTO/AutoFDO/裁剪 三者全关） |
 
-前三次分别对应本文 §1.5、§11（第二次）、§13（第三次）。第四次见 §14、§15。
+前三次分别对应本文 §1.5、§11（第二次）、§13（第三次）。第四次见 §14、§15；第五次（开机成功）见 §12。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
 一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
@@ -470,6 +471,69 @@ flags            = 0
 
 日志里还会打一行 `CODEGEN: clang ... / LTO=... / AutoFDO=...`，
 一眼能看出这次跑的是什么设置。
+
+### 第四次运行：开机成功
+
+用户在 `enable_thinlto=false` + `enable_autofdo=false` + `reduce_debug=false`
+下重跑，**设备正常开机**。截图确认：
+
+```
+内核版本   6.6.142-4k-g17a947583ae7-dirty
+设备       Xiaomi Redmi 25053RT47C
+Android    17
+SUSFS      v2.3.0（9 项功能全部就位）
+管理器     BakaSU v4.2.0-rc3，工作中（Built-in）
+```
+
+日志侧 `[gate 1/3]`～`[gate 3/3]` 全过，`CONFIG_LTO_NONE=y`，
+`[codegen] AutoFDO off, as requested`。
+
+**但这一轮同时动了三个变量，所以还不能定论。** 用户的判断是"裁剪是凶手"，
+计划下一轮只关裁剪、恢复 LTO + AutoFDO 来做排除法——这个方法是对的。
+
+### 一条推翻"裁剪是凶手"的证据
+
+官方（正在运行的）配置和我们的纯基线**都**带：
+
+```
+CONFIG_UBSAN=y
+CONFIG_UBSAN_TRAP=y            ← 任何 UB 直接 trap，静默死亡，无日志
+CONFIG_UBSAN_SANITIZE_ALL=y    ← 插桩到所有代码
+```
+
+而**这次能开机的版本，UBSAN 是开着的**（`reduce_debug=false` 保留了基线设置）。
+所以 `UBSAN_TRAP` 在这台设备上是**可存活的**，它不是变量。
+
+也就是说：裁剪关掉的 20 个符号里，真正有启动期行为影响的是
+`CLEANCACHE`（Qualcomm tmem 受害者缓存，PFRA 换页时会走）和
+`DEBUG_MEMORY_INIT`（内存初始化健全性检查）。其余是 printk 冗长、
+debugfs、RCU 跟踪——静态阅读找不到能让启动挂死的机制。
+
+**因此下一轮的预测**：只关裁剪（恢复 LTO + AutoFDO）时，
+UBSAN_TRAP 会重新打开。当前证据表明它本身无害，但如果这一轮**仍然挂**，
+那基本可以断定是 AutoFDO 或 ThinLTO，而不是裁剪。
+
+### 裁剪分组：万一裁剪真是凶手
+
+为此新增 `reduce_debug_group`，把 14 个 `-d` 符号按 `#@GROUP:` 标记分成四组，
+选组不需要改代码、不需要新 fragment：
+
+| 组 | 符号 | 实测代价 |
+|---|---|---|
+| `ubsan` | `UBSAN` + 5 个子项 | 8 个符号（含派生的 `CC_HAS_UBSAN_ARRAY_BOUNDS`、`TEST_UBSAN`） |
+| `boot-debug` | `DEBUG_MISC` `DEBUG_MEMORY_INIT` `CMA_DEBUGFS` `CLEANCACHE` | 4 |
+| `printk` | `PRINTK_CALLER` `PRINTK_TIME` | 2 |
+| `rcu-bt` | `RCU_TRACE` `BT_DEBUGFS` | 2 |
+| `all`（默认） | 全部 | 20 |
+
+组名写错会直接报错（匹配到 0 个符号即 `exit 1`），不会静默构建出一个"看起来裁了
+其实没裁"的包。裁剪审计对每一组都照常运行——白名单是超集，所以单组裁剪天然通过。
+
+### 顺带修掉的一个 bug
+
+`CODEGEN:` 那行日志打出来是 `LTO= / AutoFDO=`——两个变量都是空的。
+原因是我只把状态写进了 `$GITHUB_ENV`，**从没赋给 shell 变量**。
+现已改为先赋值再写入，摘要表格里的 LTO / AutoFDO / Reduction 三行也一并修正。
 
 ### 仍然无法从镜像判断的
 

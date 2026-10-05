@@ -110,9 +110,19 @@ on:
         type: boolean
         default: true
       reduce_debug:
-        description: "Trim UBSAN/profiling/debugfs (ABI-safe; applied to the merged defconfig)"
+        description: "Trim debug features (ABI-safe; applied to the merged defconfig)"
         type: boolean
         default: true
+      reduce_debug_group:
+        description: "Which part of the reduction, when reduce_debug is on"
+        type: choice
+        default: all
+        options:
+          - all
+          - ubsan
+          - boot-debug
+          - printk
+          - rcu-bt
       bundle_modules:
         description: "Also put built .ko files into the zip under modules/ (not flashed)"
         type: boolean
@@ -491,14 +501,17 @@ jobs:
               # the toolchain was new enough; a too-old clang silently loses
               # the symbol here.
               echo "CLANG_AUTOFDO_PROFILE=$PWD/$IN_TREE_PROFILE" >> $GITHUB_ENV
-              echo "AUTOFDO_STATUS=enabled (in-tree profile, $(du -h "$IN_TREE_PROFILE" | cut -f1))" >> $GITHUB_ENV
+              AUTOFDO_STATUS="enabled (in-tree profile, $(du -h "$IN_TREE_PROFILE" | cut -f1))"
+              echo "AUTOFDO_STATUS=$AUTOFDO_STATUS" >> $GITHUB_ENV
               echo "  - $AUTOFDO_FRAGMENT (in-tree profile)"
             else
-              echo "AUTOFDO_STATUS=skipped" >> $GITHUB_ENV
+              AUTOFDO_STATUS="skipped (profile unavailable)"
+              echo "AUTOFDO_STATUS=$AUTOFDO_STATUS" >> $GITHUB_ENV
               echo "::warning::$IN_TREE_PROFILE missing or empty; AutoFDO disabled"
             fi
           else
-            echo "AUTOFDO_STATUS=disabled by input" >> $GITHUB_ENV
+            AUTOFDO_STATUS="disabled by input"
+            echo "AUTOFDO_STATUS=$AUTOFDO_STATUS" >> $GITHUB_ENV
             echo "  AutoFDO disabled by input"
           fi
 
@@ -523,12 +536,14 @@ jobs:
             LTO_FRAGMENT=onyx_lto.fragment
             echo "CONFIG_LTO_CLANG_THIN=y" > "$LTO_FRAGMENT"
             FRAGMENTS="$FRAGMENTS $LTO_FRAGMENT"
-            echo "LTO_STATUS=ThinLTO" >> $GITHUB_ENV
+            LTO_STATUS="ThinLTO"
+            echo "LTO_STATUS=$LTO_STATUS" >> $GITHUB_ENV
             echo "  - $LTO_FRAGMENT (ThinLTO)"
           else
             # No fragment at all: LTO_NONE is the Kconfig default, which is
             # what the stock kernel uses. Asserted after the merge below.
-            echo "LTO_STATUS=none (matches stock device kernel)" >> $GITHUB_ENV
+            LTO_STATUS="none (matches stock device kernel)"
+            echo "LTO_STATUS=$LTO_STATUS" >> $GITHUB_ENV
             echo "  LTO disabled by input (LTO_NONE, as on the stock kernel)"
           fi
 
@@ -569,16 +584,40 @@ jobs:
           # gate 3's diffconfig stays a real assertion.
           OVERRIDE_ARGS=""
           if [ "${{ inputs.reduce_debug }}" = "true" ]; then
+            # The fragment carries "#@GROUP: <name>" markers. "all" takes
+            # every symbol; any other value takes just that group, so a
+            # suspected offender can be bisected without a new fragment.
+            REDUCE_GROUP="${{ inputs.reduce_debug_group }}"
+            case "$REDUCE_GROUP" in
+              all)      GROUP_RE='^#@GROUP: ' ;;
+              *)        GROUP_RE="^#@GROUP: $REDUCE_GROUP\$" ;;
+            esac
+            IN_GROUP=0
+            REDUCED_SYMS=""
             while IFS= read -r line; do
               case "$line" in
-                CONFIG_*)                  OVERRIDE_ARGS="$OVERRIDE_ARGS -e ${line%%=*}" ;;
-                "# CONFIG_"*" is not set")
-                                            OVERRIDE_ARGS="$OVERRIDE_ARGS -d $(echo "${line#\# }" | cut -d' ' -f1)" ;;
+                '#@GROUP: '*) if [[ "$line" =~ $GROUP_RE ]]; then IN_GROUP=1; else IN_GROUP=0; fi; continue ;;
+              esac
+              [ "$IN_GROUP" = "1" ] || continue
+              case "$line" in
+                CONFIG_*)                  OVERRIDE_ARGS="$OVERRIDE_ARGS -e ${line%%=*}"
+                                            REDUCED_SYMS="$REDUCED_SYMS ${line%%=*}" ;;
+                "# CONFIG_"*" is not set") sym=$(echo "${line#\# }" | cut -d' ' -f1)
+                                            OVERRIDE_ARGS="$OVERRIDE_ARGS -d $sym"
+                                            REDUCED_SYMS="$REDUCED_SYMS $sym" ;;
               esac
             done < "$DEBUG_FRAGMENT"
-            echo "  debug reduction: $(echo $OVERRIDE_ARGS | wc -w) overrides from $DEBUG_FRAGMENT"
+            REDUCED_COUNT=$(echo $REDUCED_SYMS | wc -w)
+            if [ "$REDUCED_COUNT" -eq 0 ]; then
+              echo "::error::reduce_debug_group='$REDUCE_GROUP' matched no symbols in $DEBUG_FRAGMENT"
+              exit 1
+            fi
+            echo "  debug reduction: $REDUCED_COUNT symbols (group: $REDUCE_GROUP)"
+            echo "  reducing:$REDUCED_SYMS" | tr ' ' '\n' | sed 's/^/    /'
+            echo "REDUCTION_STATUS=applied ($REDUCED_COUNT symbols, group=$REDUCE_GROUP)" >> $GITHUB_ENV
           else
             echo "  debug reduction disabled, keeping the GKI base defaults"
+            echo "REDUCTION_STATUS=disabled" >> $GITHUB_ENV
           fi
 
           if [ "$BTF_OFF" = "1" ]; then
@@ -949,7 +988,8 @@ jobs:
           | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}, LLVM ${{ env.CLANG_MAJOR }}) — ${{ env.CLANG_STATUS }} |
           | **Config base** | `gki_defconfig` + `onyx_gki.fragment` (+ vendor =y, + susfs) |
           | **Config gates** | 3/3 passed (no overrides, no warnings, all fragments applied) |
-          | **Reduction audit** | ${{ env.REDUCTION_AUDIT || 'disabled' }} |
+          | **Reduction** | ${{ env.REDUCTION_STATUS }} |
+          | **Reduction audit** | ${{ env.REDUCTION_AUDIT || 'not run (reduction off)' }} |
           | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
           | **HZ** | 300 |
           | **LTO** | ${{ env.LTO_STATUS }} |
