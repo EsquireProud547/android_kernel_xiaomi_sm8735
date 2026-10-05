@@ -485,6 +485,18 @@ if [ "$ENABLE_SUSFS" = "true" ]; then
   grep -q "^CONFIG_KSU_SUSFS=y" out/.config \
     && echo "SUSFS_STATUS=applied (CONFIG_KSU_SUSFS=y)" >> $GITHUB_ENV \
     || { echo "::error::SUSFS symbols missing"; exit 1; }
+  # BakaSU's Kconfig drops upstream susfs4ksu's `depends on KSU` from
+  # config KSU_SUSFS -- it declares `depends on THREAD_INFO_IN_TASK && 64BIT`
+  # instead -- so Kconfig will not stop KSU_SUSFS being set on its own. If
+  # that ever happened, drivers/Makefile's `obj-$(CONFIG_KSU) += kernelsu/`
+  # would contribute nothing while kernel/Kbuild's SUSFS branch still compiled
+  # the hooks: a confusing build error, or hooks with no KernelSU behind them.
+  # The fragment pairs the two symbols today; assert it so that stays true
+  # without relying on the fragment being read.
+  if ! grep -q "^CONFIG_KSU=y" out/.config; then
+    echo "::error::CONFIG_KSU_SUSFS=y but CONFIG_KSU is not set -- BakaSU omits the 'depends on KSU' that upstream susfs4ksu declares"
+    exit 1
+  fi
 fi
 
 if [ "$BTF_OFF" = "0" ]; then
