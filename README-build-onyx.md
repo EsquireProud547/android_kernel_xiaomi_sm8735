@@ -323,6 +323,9 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101154931030` | ❌ | 第 6 步：`.github/actions/libbpf_strchr_const.patch: No such file or directory` |
 | `logs_101161199225` | ❌ | 第 9 步：`clang: error: unknown argument: '-print-version-number'` |
 | `logs_101178482014` | ❌ | 第 15 步 Build：`certs/extract-cert.c:152: error: use of undeclared identifier 'key_pass'` |
+| `logs_101188129967` | ✅ | 19/19 步全过，产物 `Onyx-Kernel-v4-20261005.zip`（19M，97 个模块） |
+
+前三次分别对应本文 §1.5、§11（第二次）、§12（第三次）。第四次见 §13、§14。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
 一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
@@ -334,7 +337,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 `--version` 输出里 `sed` 解析，并保留「低于 17 就早失败」的原意
 （`arch/Kconfig:804` 的 `AUTOFDO_CLANG depends on CLANG_VERSION >= 170000`）。
 
-**第三次**：**上游回归**，见 §11。
+**第三次**：**上游回归**，见 §12。
 
 ### 第三次运行的配置结果（全部正确）
 
@@ -449,3 +452,154 @@ error: use of undeclared identifier 'key_pass'
 
 前两次是我自己写的代码没在本地跑过。第三次是**上游 bug**——这类问题
 只能靠"真去编译一次"发现，静态阅读发现不了。
+
+---
+
+## 13. 首次成功构建（logs_101188129967）
+
+第四次运行，19 步全过。**这是本流水线在 6.6.142 上的第一次完整构建。**
+
+| 指标 | 值 |
+|---|---|
+| 步骤 | 19/19，0 失败 |
+| 闸门 | 3/3 通过 |
+| **裁剪审计** | 通过（20 个符号，全在白名单内） |
+| 内核 | `6.6.142-4k-g29ca9ddd04f2-dirty` |
+| 模块 | 97 |
+| 产物 | `Onyx-Kernel-v4-20261005.zip`，19M |
+| 编译耗时 | 1014 s（≈17 min） |
+| checkout 耗时 | 355 s（`fetch-depth: 0`，126 万提交） |
+| ccache | 命中恢复，仅 ~72 MB（首次冷编译） |
+| `.BTF` | `BTF_SECTIONS_IN_VMLINUX=ok` |
+| modpost | 0 个 undefined，0 错误，0 objtool 警告 |
+
+日志里唯一的警告是 GKI 树常见的 `overriding recipe for target 'dtbs'` 一类，
+make 层面的，无害。
+
+---
+
+## 14. 配置审计：我们相对纯基线改了什么
+
+这是最值得看的一节。用 `diffconfig` 对比「`gki_defconfig` 单独生成的 .config」
+与「我们完整流水线生成的 .config」，**全部 52 行差异**：
+
+### 调试裁剪（14 个请求，20 个符号消失）
+
+```
+ BT_DEBUGFS y -> n        CLEANCACHE y -> n       CMA_DEBUGFS y -> n
+ DEBUG_MEMORY_INIT y -> n DEBUG_MISC y -> n       PRINTK_CALLER y -> n
+ PRINTK_TIME y -> n      RCU_TRACE y -> n        UBSAN y -> n
+-CC_HAS_UBSAN_ARRAY_BOUNDS y                      -TEST_UBSAN n
+-UBSAN_ARRAY_BOUNDS y   -UBSAN_BOOL n   -UBSAN_BOUNDS y   -UBSAN_ENUM n
+-UBSAN_LOCAL_BOUNDS y   -UBSAN_SANITIZE_ALL y     -UBSAN_SHIFT n
+-UBSAN_TRAP y           -UBSAN_UNREACHABLE n
+```
+
+除 UBSAN 及其依赖外**没有任何附带损失**。
+
+### 性能调优
+
+```
+ AUTOFDO_CLANG n -> y
+ HZ 250 -> 300          HZ_250 y -> n            HZ_300 n -> y
+ LTO_CLANG_THIN n -> y  LTO_NONE y -> n          +LTO y   +LTO_CLANG y
+ ZRAM_DEF_COMP "lzo-rle" -> "lz4"  ZRAM_DEF_COMP_LZ4 n -> y
+ ZRAM_DEF_COMP_LZORLE y -> n
+```
+
+### 容器兼容
+
+```
+ DEVTMPFS n -> y        PID_NS n -> y            POSIX_MQUEUE n -> y
+ SYSVIPC n -> y         USER_NS n -> y           TMPFS_POSIX_ACL n -> y
+ TMPFS_XATTR n -> y     NETFILTER_XT_MATCH_ADDRTYPE n -> y
+ +IPC_NS y  +POSIX_MQUEUE_SYSCTL y  +SYSVIPC_COMPAT y  +SYSVIPC_SYSCTL y
+```
+
+后四个新出现的符号都是 `default y` / `def_bool y` 的内部符号
+（`init/Kconfig:403/409/429`），被 `SYSVIPC` / `POSIX_MQUEUE` 带出来。
+`TMPFS_XATTR` 是 `TMPFS_POSIX_ACL` 的 `select`（`fs/Kconfig:191`）——我们没请求它，
+但 POSIX ACL 本来就需要 xattr 支持。
+
+### Xiaomi vendor 的 4 个 `=y`
+
+```
+ INPUT_FINGERPRINT n -> y   JOYSTICK_XPAD_FF n -> y   JOYSTICK_XPAD_LEDS n -> y
+ +FOD_FINGERPRINT y
+ +FINGERPRINT_MI_FP n  +FP_HAVE_MULTI_SCREEN n  +SIDE_FINGERPRINT n
+```
+
+**4 个里只有 2 个真的有用**，已从源码层面证实：
+
+- `JOYSTICK_XPAD_FF` / `JOYSTICK_XPAD_LEDS` —— **有效**。`gki_defconfig:409`
+  已有 `CONFIG_JOYSTICK_XPAD=y`，所以这两个开关有真实驱动可用。
+- `INPUT_FINGERPRINT` / `FOD_FINGERPRINT` —— **空壳**。
+  `drivers/input/fingerprint/mi_fp/Kconfig` 里 `FINGERPRINT_MI_FP` 是 tristate，
+  厂商配置写的是 `=m`，被我们的 `=y` 过滤器丢掉，于是它 `n`，
+  `mi_fp.ko` 根本不参与编译。而 `FOD_FINGERPRINT` 这个 bool **没有任何
+  `depends on`**，kconfig 无条件接受 `=y`；全树只有
+  `drivers/input/fingerprint/mi_fp/fp_driver.{c,h}` 引用它——那是不编译的文件。
+  结论：`CONFIG_FOD_FINGERPRINT=y` 是一个**死配置**。
+
+要修就得把 `FINGERPRINT_MI_FP` 加进 vendor 过滤器的白名单，但加之前必须确认
+`mi_fp.ko` 能独立链接（旧树验过 exit 0，本树未验）。
+
+### 一个必须记下来的结论：不会变砖
+
+```
+CONFIG_MODULE_SIG=y            CONFIG_MODULE_SIG_SHA256=y
+CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"
+# CONFIG_MODULE_SIG_FORCE is not set      ← 关键
+CONFIG_MODULE_SIG_PROTECT=y
+```
+
+`MODULE_SIG_FORCE` 没有 `default y`，所以是 `n`。这意味着手机上原厂
+`vendor_dlkm` 里那些**用小米自己密钥签名**的模块**仍然能加载**，只是会 taint
+内核。如果它是 `y`，那些模块会被直接拒绝 → 变砖。
+
+现在 Key configs 转储会显式打印这一项和 `MODULE_SIG_KEY`，免得哪天有人
+"顺手"打开强制签名。
+
+`CONFIG_MODULE_ALLOW_BTF_MISMATCH=y` 也确认在位（BTF 必需项）。
+
+---
+
+## 15. 新增：裁剪审计（把注释变成强制检查）
+
+闸门 1–3 只检查**我们要求的东西有没有生效**，没有一个能看见「没要求却悄悄丢掉」
+的符号——`olddefconfig` 会安静地丢弃它，然后内核照样编译成功。
+
+这正是 `CONFIG_PROFILING` 的失效模式：加进裁剪清单会让本树掉 10 个符号
+（`ARM_PMU` `ARM_PMUV3` `HAVE_HW_BREAKPOINT` `HW_PERF_EVENTS` `BPF_EVENTS`
+`BPF_LSM` `UPROBES` `UPROBE_EVENTS` `GUEST_PERF_EVENTS` `UID_SYS_STATS`），
+即所有硬件性能计数器、所有 uprobe 支持、**BPF LSM**——**make 仍然 exit 0**。
+一边发 BTF 给 eBPF 一边把 `BPF_LSM` 关掉，自相矛盾，而流水线里没有任何东西会报警。
+
+所以现在多了一步审计：把配置生成两遍（一遍带裁剪、一遍不带），
+`diffconfig` 之后要求每一处差异都在白名单内：
+
+- 任何 `UBSAN*`
+- 8 个调试开关：`BT_DEBUGFS` `CLEANCACHE` `CMA_DEBUGFS` `DEBUG_MEMORY_INIT`
+  `DEBUG_MISC` `PRINTK_CALLER` `PRINTK_TIME` `RCU_TRACE`
+- `CC_HAS_UBSAN_ARRAY_BOUNDS`、`TEST_UBSAN`
+
+不在名单里的任何一行 → **构建失败**并打印越界符号。
+
+本地双向验证过：
+
+| 场景 | 结果 |
+|---|---|
+| 真实裁剪清单（20 个符号） | ✅ 通过 |
+| 模拟加入 `CONFIG_PROFILING`（多出 `ARM_PMU`/`BPF_LSM`/`UPROBES`） | ❌ 失败并列出越界符号 |
+
+成本是一次额外的 `olddefconfig`（几秒）。这一步让 fragment 里那段
+「DO NOT ADD CONFIG_PROFILING」从注释变成了可执行约束。
+
+### 顺带修掉的两个小问题
+
+- `CLANG_MAJOR` 之前只 `echo` 到 stdout，没进 `$GITHUB_ENV`，导致摘要表格渲染成
+  `LLVM )`。现在补上 `>> $GITHUB_ENV`。
+- Key configs 转储此前把「显式 `n`」和「配置里根本没这个符号」都显示成
+  `NOT SET`，无法区分。现在 `# CONFIG_X is not set` 渲染成 `n`。
+
+---

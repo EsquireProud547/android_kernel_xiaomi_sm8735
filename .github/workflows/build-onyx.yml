@@ -289,6 +289,10 @@ jobs:
             exit 1
           fi
           echo "CLANG_MAJOR=$CLANG_MAJOR"
+          # Must go to GITHUB_ENV, not just stdout: the Build summary step
+          # renders ${{ env.CLANG_MAJOR }}, and a plain echo leaves it empty
+          # there -- the job still succeeds, the table just reads "LLVM )".
+          echo "CLANG_MAJOR=$CLANG_MAJOR" >> $GITHUB_ENV
           if [ "$CLANG_MAJOR" -lt 17 ]; then
             echo "::error::clang $CLANG_MAJOR is too old -- CONFIG_AUTOFDO_CLANG needs >= 17"
             exit 1
@@ -555,6 +559,13 @@ jobs:
           # request rather than weakening the gate.
           OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_UAPI_HEADER_TEST"
 
+          # Keep a pre-reduction copy of the merged defconfig. It is the input
+          # to the reduction audit below, which is the only thing in this
+          # pipeline that verifies the debug reduction stays ABI- and
+          # feature-safe rather than merely documenting that it should be.
+          MERGED_NOREDUCE_PATH="$MERGED_PATH.noreduce"
+          cp "$MERGED_PATH" "$MERGED_NOREDUCE_PATH"
+
           if [ -n "$OVERRIDE_ARGS" ]; then
             # shellcheck disable=SC2086
             scripts/config --file "$MERGED_PATH" $OVERRIDE_ARGS
@@ -635,7 +646,64 @@ jobs:
           fi
           IGNORED=$(grep -cE '^-[A-Za-z0-9_]+ n$' "$MERGE_OUT" || true)
           echo "  [gate 3/3] every requested symbol took effect ($IGNORED unset-but-invisible symbols ignored)"
-          rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT"
+
+          # ---- REDUCTION AUDIT: the debug list must cost nothing real ------
+          #
+          # Gates 1-3 all check that what we ASKED for happened. None of them
+          # can see what a fragment does not ask for but loses anyway, because
+          # olddefconfig drops such a symbol quietly and the kernel still
+          # compiles. That failure mode is not hypothetical: adding
+          # CONFIG_PROFILING to onyx_debug_reduction.fragment costs ten
+          # symbols on this tree -- ARM_PMU, ARM_PMUV3, HAVE_HW_BREAKPOINT,
+          # HW_PERF_EVENTS, BPF_EVENTS, BPF_LSM, UPROBES, UPROBE_EVENTS,
+          # GUEST_PERF_EVENTS, UID_SYS_STATS -- i.e. every hardware
+          # performance counter, all uprobe support and BPF LSM, from a build
+          # that exits 0. Shipping BTF for eBPF while BPF_LSM is gone is
+          # self-defeating, and nothing else in this pipeline would notice.
+          #
+          # So: build the same config twice, once with the reduction and once
+          # without, and require every difference to be on the allow-list.
+          if [ "${{ inputs.reduce_debug }}" = "true" ]; then
+            rm -rf out_noreduce
+            mkdir -p out_noreduce
+            cp "$MERGED_NOREDUCE_PATH" out_noreduce/.config
+            if make O=out_noreduce CC=clang LLVM=1 LLVM_IAS=1 olddefconfig >/dev/null 2>&1 \
+               && scripts/diffconfig out_noreduce/.config out/.config > "$MERGE_OUT"; then
+              # UBSAN and its dependents may go; the eight debug knobs are the
+              # point of the list. Nothing else is allowed to change.
+              ALLOWED_EXACT="BT_DEBUGFS CLEANCACHE CMA_DEBUGFS DEBUG_MEMORY_INIT \
+                             DEBUG_MISC PRINTK_CALLER PRINTK_TIME RCU_TRACE \
+                             CC_HAS_UBSAN_ARRAY_BOUNDS TEST_UBSAN"
+              VIOLATIONS=""
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                sym=$(echo "$line" | sed -E 's/^[-+ ]//; s/ .*//; s/^([A-Za-z0-9_]+)=.*/\1/')
+                case "$sym" in
+                  UBSAN*) continue ;;
+                esac
+                allowed=0
+                for a in $ALLOWED_EXACT; do [ "$sym" = "$a" ] && allowed=1; done
+                [ "$allowed" -eq 0 ] && VIOLATIONS="$VIOLATIONS$line"$'\n'
+              done < "$MERGE_OUT"
+              if [ -n "$VIOLATIONS" ]; then
+                echo "========================================================"
+                echo "::error::debug reduction removed symbols that are not debug features"
+                printf "%s" "$VIOLATIONS"
+                echo "Every one of those is off, not just UBSan. See the DO NOT ADD"
+                echo "CONFIG_PROFILING block in $DEBUG_FRAGMENT -- this is exactly the"
+                echo "cascade that block warns about, and it does not fail the build."
+                exit 1
+              fi
+              REDUCED=$(grep -cvE '^[[:space:]]*$' "$MERGE_OUT" || true)
+              echo "  [audit] reduction costs $REDUCED symbols, all UBSan/debug-only"
+              echo "REDUCTION_AUDIT=passed ($REDUCED symbols, all allow-listed)" >> $GITHUB_ENV
+            else
+              echo "::warning::reduction audit could not run; continuing"
+            fi
+            rm -rf out_noreduce
+          fi
+
+          rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$MERGED_NOREDUCE_PATH"
 
           # ---- feature status ----------------------------------------------
           grep -q "^CONFIG_SYSVIPC=y" out/.config \
@@ -666,8 +734,14 @@ jobs:
             CONFIG_DEVTMPFS CONFIG_ANDROID_KABI_RESERVE \
             CONFIG_GKI_DYNAMIC_TASK_STRUCT_SIZE \
             CONFIG_DEBUG_INFO_BTF CONFIG_DEBUG_INFO_BTF_MODULES CONFIG_PAHOLE_VERSION \
-            CONFIG_MODULE_SIG_HASH CONFIG_MODULE_SIG_PROTECT; do
+            CONFIG_MODULE_SIG_HASH CONFIG_MODULE_SIG_PROTECT \
+            CONFIG_MODULE_SIG_FORCE CONFIG_MODULE_SIG_KEY \
+            CONFIG_MODULE_ALLOW_BTF_MISMATCH \
+            CONFIG_MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS \
+            CONFIG_PROFILING CONFIG_PERF_EVENTS CONFIG_BPF_LSM CONFIG_UPROBES \
+            CONFIG_DEBUG_INFO_REDUCED CONFIG_UBSAN; do
             val=$(grep "^${cfg}=" out/.config 2>/dev/null | cut -d= -f2)
+            if [ -z "$val" ] && grep -q "^# ${cfg} is not set" out/.config; then val="n"; fi
             [ -n "$val" ] && echo "  $cfg=$val" || echo "  $cfg=NOT SET"
           done
 
@@ -806,11 +880,12 @@ jobs:
           | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}, LLVM ${{ env.CLANG_MAJOR }}) — ${{ env.CLANG_STATUS }} |
           | **Config base** | `gki_defconfig` + `onyx_gki.fragment` (+ vendor =y, + susfs) |
           | **Config gates** | 3/3 passed (no overrides, no warnings, all fragments applied) |
+          | **Reduction audit** | ${{ env.REDUCTION_AUDIT || 'disabled' }} |
           | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
           | **HZ** | 300 |
           | **LTO** | ThinLTO (FullLTO conflicts with KCFI) |
           | **ZRAM** | lz4 |
-          | **Module sig** | SHA-256 (set by the 6.6.142 base defconfig, not by this file) |
+          | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **ReSukiSU** | ${{ env.KSU_STATUS }} |
           | **SUSFS** | ${{ env.SUSFS_STATUS || 'disabled' }} |
           | **Droidspaces** | ${{ env.DROIDSPACES_STATUS }} |
