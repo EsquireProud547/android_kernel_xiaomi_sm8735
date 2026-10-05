@@ -101,6 +101,10 @@ on:
         description: "Use the in-tree GKI AutoFDO profile (non-fatal if unavailable)"
         type: boolean
         default: true
+      enable_thinlto:
+        description: "ThinLTO. OFF matches the stock device kernel (LTO_NONE) — try this first if a build hangs at boot"
+        type: boolean
+        default: true
       enable_btf:
         description: "BTF for eBPF/CO-RE (needs pahole >= 1.21; auto-disabled if missing)"
         type: boolean
@@ -494,9 +498,46 @@ jobs:
               echo "::warning::$IN_TREE_PROFILE missing or empty; AutoFDO disabled"
             fi
           else
-            echo "AUTOFDO_STATUS=skipped" >> $GITHUB_ENV
+            echo "AUTOFDO_STATUS=disabled by input" >> $GITHUB_ENV
             echo "  AutoFDO disabled by input"
           fi
+
+          # ---- LTO (also a generated fragment, so it can be switched off) --
+          # ThinLTO, not FullLTO: CONFIG_CFI_CLANG=y (KCFI, gki_defconfig:98)
+          # and FullLTO's type-id reassignment conflict. See gki-clo commit
+          # 98763e396491 "Revert to ThinLTO: FullLTO conflicts with KCFI type
+          # IDs".
+          #
+          # This is the second of the two codegen switches, and both exist for
+          # the same reason. The stock device kernel -- the one whose config was
+          # extracted from the running system's own boot image, built from this
+          # same tree with this same clang r596125 -- uses LTO_NONE and has
+          # AUTOFDO_CLANG=n. Any of our tuning that the vendor does not use is
+          # a suspect when a build boots to the splash screen and stops, and
+          # these are the two.
+          #
+          # Generated as a fragment rather than left in onyx_gki.fragment so
+          # that turning it off does not cost HZ_300, SYSVIPC and the rest.
+          LTO_FRAGMENT=""
+          if [ "${{ inputs.enable_thinlto }}" = "true" ]; then
+            LTO_FRAGMENT=onyx_lto.fragment
+            echo "CONFIG_LTO_CLANG_THIN=y" > "$LTO_FRAGMENT"
+            FRAGMENTS="$FRAGMENTS $LTO_FRAGMENT"
+            echo "LTO_STATUS=ThinLTO" >> $GITHUB_ENV
+            echo "  - $LTO_FRAGMENT (ThinLTO)"
+          else
+            # No fragment at all: LTO_NONE is the Kconfig default, which is
+            # what the stock kernel uses. Asserted after the merge below.
+            echo "LTO_STATUS=none (matches stock device kernel)" >> $GITHUB_ENV
+            echo "  LTO disabled by input (LTO_NONE, as on the stock kernel)"
+          fi
+
+          # One line so a log tells you which codegen this run used, without
+          # having to go hunting through the gate output. These are shell
+          # variables on purpose: ${{ env.AUTOFDO_STATUS }} would be resolved
+          # when the step starts, which on a fresh run is empty -- the value
+          # only exists in this shell and in $GITHUB_ENV afterwards.
+          echo "CODEGEN: clang ${{ env.CLANG_VERSION }} / LTO=$LTO_STATUS / AutoFDO=$AUTOFDO_STATUS"
 
           # ---- GATE 1: no fragment may override an existing =y/m value -----
           # (build.config.msm.common:97)
@@ -647,6 +688,33 @@ jobs:
           IGNORED=$(grep -cE '^-[A-Za-z0-9_]+ n$' "$MERGE_OUT" || true)
           echo "  [gate 3/3] every requested symbol took effect ($IGNORED unset-but-invisible symbols ignored)"
 
+          # ---- codegen switches: assert the config ended up where the inputs
+          # ---- said it would -----------------------------------------------
+          # LTO is a choice group, so "no fragment" and "LTO_NONE" are the same
+          # thing in the config -- but it is worth asserting rather than
+          # assuming, because the whole point of the enable_thinlto switch is
+          # to reproduce the stock kernel's LTO_NONE exactly, and a silent
+          # reappearance of ThinLTO would make a boot-hang bisect meaningless.
+          if [ "${{ inputs.enable_thinlto }}" = "true" ]; then
+            grep -q "^CONFIG_LTO_CLANG_THIN=y" out/.config \
+              || { echo "::error::enable_thinlto=true but CONFIG_LTO_CLANG_THIN is not set"; exit 1; }
+          else
+            grep -q "^CONFIG_LTO_NONE=y" out/.config \
+              || { echo "::error::enable_thinlto=false but CONFIG_LTO_NONE is not set"; exit 1; }
+            grep -q "^CONFIG_LTO_CLANG_THIN=y" out/.config \
+              && { echo "::error::enable_thinlto=false but ThinLTO leaked in"; exit 1; }
+          fi
+          if [ "${{ inputs.enable_autofdo }}" != "true" ]; then
+            # AUTOFDO_CLANG also has a `depends on CLANG_VERSION >= 170000`; if
+            # the toolchain were old it would vanish silently. Since the point
+            # of turning it off is a controlled bisect, its absence must be the
+            # one we asked for.
+            grep -q "^CONFIG_AUTOFDO_CLANG=y" out/.config \
+              && { echo "::error::enable_autofdo=false but CONFIG_AUTOFDO_CLANG is set"; exit 1; }
+            echo "  [codegen] AutoFDO off, as requested"
+          fi
+          echo "  [codegen] $(grep -E '^(CONFIG_LTO_NONE|CONFIG_LTO_CLANG_THIN|CONFIG_AUTOFDO_CLANG)=' out/.config | tr '\n' ' ')"
+
           # ---- REDUCTION AUDIT: the debug list must cost nothing real ------
           #
           # Gates 1-3 all check that what we ASKED for happened. None of them
@@ -703,7 +771,7 @@ jobs:
             rm -rf out_noreduce
           fi
 
-          rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$MERGED_NOREDUCE_PATH"
+          rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT" "$MERGED_NOREDUCE_PATH"
 
           # ---- feature status ----------------------------------------------
           grep -q "^CONFIG_SYSVIPC=y" out/.config \
@@ -739,6 +807,7 @@ jobs:
             CONFIG_MODULE_ALLOW_BTF_MISMATCH \
             CONFIG_MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS \
             CONFIG_PROFILING CONFIG_PERF_EVENTS CONFIG_BPF_LSM CONFIG_UPROBES \
+            CONFIG_LTO CONFIG_LTO_NONE CONFIG_LTO_CLANG CONFIG_LTO_CLANG_THIN \
             CONFIG_DEBUG_INFO_REDUCED CONFIG_UBSAN; do
             val=$(grep "^${cfg}=" out/.config 2>/dev/null | cut -d= -f2)
             if [ -z "$val" ] && grep -q "^# ${cfg} is not set" out/.config; then val="n"; fi
@@ -883,8 +952,9 @@ jobs:
           | **Reduction audit** | ${{ env.REDUCTION_AUDIT || 'disabled' }} |
           | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
           | **HZ** | 300 |
-          | **LTO** | ThinLTO (FullLTO conflicts with KCFI) |
+          | **LTO** | ${{ env.LTO_STATUS }} |
           | **ZRAM** | lz4 |
+          | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **ReSukiSU** | ${{ env.KSU_STATUS }} |
           | **SUSFS** | ${{ env.SUSFS_STATUS || 'disabled' }} |

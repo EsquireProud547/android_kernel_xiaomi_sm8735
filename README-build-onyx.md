@@ -325,7 +325,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101178482014` | ❌ | 第 15 步 Build：`certs/extract-cert.c:152: error: use of undeclared identifier 'key_pass'` |
 | `logs_101188129967` | ✅ | 19/19 步全过，产物 `Onyx-Kernel-v4-20261005.zip`（19M，97 个模块） |
 
-前三次分别对应本文 §1.5、§11（第二次）、§12（第三次）。第四次见 §13、§14。
+前三次分别对应本文 §1.5、§11（第二次）、§13（第三次）。第四次见 §14、§15。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
 一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
@@ -337,7 +337,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 `--version` 输出里 `sed` 解析，并保留「低于 17 就早失败」的原意
 （`arch/Kconfig:804` 的 `AUTOFDO_CLANG depends on CLANG_VERSION >= 170000`）。
 
-**第三次**：**上游回归**，见 §12。
+**第三次**：**上游回归**，见 §13。
 
 ### 第三次运行的配置结果（全部正确）
 
@@ -368,7 +368,121 @@ Droidspaces `applied`、AutoFDO `enabled (in-tree profile, 4.0M)`。
 
 ---
 
-## 12. 上游回归：extract-cert 在 stock OpenSSL 下编不过
+## 12. 刷机后卡 logo：与官方配置的对比
+
+用户把成功构建的 AK3 包刷进去后**卡在第一屏小米 logo**，系统进不去，
+recovery 也进不去。怀疑是配置问题。
+
+### 基准：直接从官方 boot 镜像里解出配置
+
+用户提供了**正在运行的系统自己的 boot 镜像**（pixelOS 官方附加镜像）。
+用内核自带的 `scripts/extract-ikconfig` 解出配置：
+
+```
+Linux/arm64 6.6.142
+Android (15071444, +pgo, +bolt, +lto, +mlgo, based on r596125) clang version 22.0.2
+8757 行
+```
+
+**同一棵源码树、同一个编译器**——这是能拿到的最干净的对照基准。
+已存为 [`arch/arm64/configs/stock_onyx.config`](arch/arm64/configs/stock_onyx.config)。
+
+boot 镜像的结构（手工解析 `ANDROID!` v4 头）：
+
+```
+offset 4096          内核（未压缩 arm64 Image，36 805 120 字节）
+offset 36810752      vbmeta（AVB0，1536 字节）
+offset 100663232     AVB footer（AVBf）
+```
+
+### 对比结果
+
+总差异 936 行，但其中 **689 项是官方 `=m` 的 vendor 模块**
+（`MMC_CQHCI`、`ARM_SMMU`、`COMMON_CLK_QCOM`…），它们由 `vendor_dlkm` 加载，
+GKI-only 构建里没有是**正常形态**。另有 503 项是这些模块的子选项（`SENSORS` 157 个等），
+同样属于结果而非原因。
+
+**真正有意义的差异只有 8 组：**
+
+| # | 项 | 我们 | 官方 | 风险 |
+|---|---|---|---|---|
+| 1 | `AUTOFDO_CLANG` | **y** | **n** | **高** |
+| 2 | `LTO_CLANG_THIN` / `LTO_NONE` | **y** / n | n / **y** | **中高** |
+| 3 | `SYSVIPC` `POSIX_MQUEUE` `IPC_NS` `USER_NS` `PID_NS` `TMPFS_POSIX_ACL` | **y** | **n** | 低 |
+| 4 | `DEVTMPFS`（`DEVTMPFS_MOUNT=n`，不会自动挂载） | **y** | **n** | 低 |
+| 5 | `MODULE_SIG_ALL`（`MODULE_SIG_FORCE=n`） | **y** | **n** | 低 |
+| 6 | `HZ` | 300 | 250 | 无 |
+| 7 | `ZRAM_DEF_COMP` | lz4 | lzo-rle | 无 |
+| 8 | 调试裁剪（UBSAN 等） | off | on | 无（已实测无损） |
+
+### 已确证排除的三个嫌疑
+
+**① 模块 CRC 不匹配。** `MODVERSIONS`、`ANDROID_KABI_RESERVE`、
+`GKI_DYNAMIC_TASK_STRUCT_SIZE`、`GKI_TASK_STRUCT_VENDOR_SIZE_MAX`、
+`MODULE_SIG_*` **全部逐字相同**。且 `include/linux/android_kabi.h:59-61` 证实
+`__GENKSYMS__` 下 `_ANDROID_KABI_REPLACE(_orig,_new)` 展开成 `_orig`，
+genksyms 看到的仍是原布局——所以 Droidspaces 补丁改 `task_struct`
+**不会改变 MODVERSIONS CRC**。
+
+**② AVB 校验。** 解析出的 vbmeta：
+
+```
+algorithm_type   = 0   (AVB_ALGORITHM_NONE，未签名)
+descriptors_size = 0   ← 没有任何 hash / hashtree descriptor
+flags            = 0
+```
+
+这个 vbmeta **什么都不校验**，是刷机时已被
+`--disable-verity --disable-verification` 改写过的。替换内核不影响它。
+
+**③ DTB 缺失。** 官方 boot 镜像里 `dtb_size = 0`，设备树本来就在 vendor 侧。
+
+### 结论与两个开关
+
+无法从配置对比直接定案，但**官方唯一没做、而我们做了的两件事就是 ① 和 ②**，
+两者都改变代码生成，且都会放大错误优化的后果：
+
+- AutoFDO 档案采自 **6.6.129 + GKI 配置**，却用到了 **6.6.142 + 小米配置**上，
+  隔了 13 个 patchlevel 和一整套完全不同的配置，函数内偏移对不上
+- 官方用 `LTO_NONE`，我们用 ThinLTO
+
+因此新增两个开关做受控 bisect：
+
+| 输入 | 效果 | 与官方一致性 |
+|---|---|---|
+| `enable_thinlto: false` | 不生成 LTO fragment → Kconfig 默认 `LTO_NONE=y` | LTO 部分完全一致 |
+| `enable_autofdo: false` | 不生成 AutoFDO fragment | AutoFDO 部分完全一致 |
+| 两个都 false | 完整复刻官方的代码生成设置 | **两项均一致** |
+
+`CONFIG_LTO_CLANG_THIN` 因此从静态的 `onyx_gki.fragment` 移到了**运行时生成的
+`onyx_lto.fragment`**，和 AutoFDO 一样——否则关掉它就得整份 fragment 都不合并，
+会连带丢掉 HZ、SYSVIPC 等所有调优。
+
+闸门 3 之后新增断言，配置与输入不符直接失败：
+
+- `enable_thinlto=true` 但没有 `CONFIG_LTO_CLANG_THIN=y` → 失败
+- `enable_thinlto=false` 但没有 `CONFIG_LTO_NONE=y` → 失败
+- `enable_thinlto=false` 但 ThinLTO 仍然出现 → 失败
+- `enable_autofdo=false` 但 `CONFIG_AUTOFDO_CLANG=y` 仍然出现 → 失败
+
+四种输入组合本地实测配置正确、闸门 1/3 通过、断言全过；
+三种配置与输入不符的情形反向测试确认断言会触发。
+
+日志里还会打一行 `CODEGEN: clang ... / LTO=... / AutoFDO=...`，
+一眼能看出这次跑的是什么设置。
+
+### 仍然无法从镜像判断的
+
+**内核到底有没有启动。** "卡第一屏 logo" 有两种完全不同的含义：
+bootloader 刷屏（内核没跑起来 → 问题在打包/加载，不在配置），
+或系统启动动画（内核跑了但起不来 → 配置嫌疑成立）。
+
+**这是下一步最需要确认的事。** 建议 `fastboot boot` 带上串口/USB console，
+只要 10 行 dmesg 就能定位得比现在快十倍。
+
+---
+
+## 13. 上游回归：extract-cert 在 stock OpenSSL 下编不过
 
 第三次运行前 14 步全过，Build 死在 `certs/extract-cert.c:152`：
 
@@ -455,7 +569,7 @@ error: use of undeclared identifier 'key_pass'
 
 ---
 
-## 13. 首次成功构建（logs_101188129967）
+## 14. 首次成功构建（logs_101188129967）
 
 第四次运行，19 步全过。**这是本流水线在 6.6.142 上的第一次完整构建。**
 
@@ -478,7 +592,7 @@ make 层面的，无害。
 
 ---
 
-## 14. 配置审计：我们相对纯基线改了什么
+## 15. 配置审计：我们相对纯基线改了什么
 
 这是最值得看的一节。用 `diffconfig` 对比「`gki_defconfig` 单独生成的 .config」
 与「我们完整流水线生成的 .config」，**全部 52 行差异**：
@@ -564,7 +678,7 @@ CONFIG_MODULE_SIG_PROTECT=y
 
 ---
 
-## 15. 新增：裁剪审计（把注释变成强制检查）
+## 16. 新增：裁剪审计（把注释变成强制检查）
 
 闸门 1–3 只检查**我们要求的东西有没有生效**，没有一个能看见「没要求却悄悄丢掉」
 的符号——`olddefconfig` 会安静地丢弃它，然后内核照样编译成功。
