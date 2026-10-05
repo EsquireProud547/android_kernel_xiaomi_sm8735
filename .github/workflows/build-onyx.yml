@@ -474,6 +474,17 @@ jobs:
             exit 1
           fi
           echo "Staged kernel image: $STAGED_IMAGE ($(du -h "$TEMP_DIR/$STAGED_IMAGE" | cut -f1))"
+          # A kernel that grows far past the stock one is a flashing risk on
+          # its own -- the stock onyx Image is 36805120 bytes and boot
+          # partitions are not elastic. Recording it makes a jump visible in
+          # the run history instead of something to notice by eye at flash
+          # time. Warning only: the threshold is a heuristic, not a rule.
+          STAGED_BYTES=$(stat -c%s "$TEMP_DIR/$STAGED_IMAGE")
+          echo "STAGED_IMAGE=$STAGED_IMAGE" >> $GITHUB_ENV
+          echo "STAGED_BYTES=$STAGED_BYTES" >> $GITHUB_ENV
+          if [ "$STAGED_BYTES" -gt 268435456 ]; then
+            echo "::warning::staged image is $((STAGED_BYTES/1024/1024)) MB; stock onyx Image is 36.8 MB"
+          fi
 
           if [ -d "$ZIMAGE_DIR/dts/vendor/qcom" ]; then
             mkdir -p "$TEMP_DIR/dtb"
@@ -565,6 +576,7 @@ jobs:
           | **BTF** | ${{ env.BTF_STATUS }} |
           | **AutoFDO** | ${{ env.AUTOFDO_STATUS }} |
           | **Modules built** | ${{ env.MODULES_BUILT }} |
+          | **Kernel image** | ${{ env.STAGED_IMAGE }} ($(({{ env.STAGED_BYTES }}/1024/1024)) MB) |
           | **Artifact** | ${{ env.ZIP_NAME }} |
 
           Not ported yet: BBRv3, NTSYNC, Baseband-guard.
