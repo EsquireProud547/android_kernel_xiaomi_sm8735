@@ -38,8 +38,9 @@ name: Build Onyx Kernel
 #
 #   * SUSFS still comes from susfs4ksu's `gki-android15-6.6` branch. There is no
 #     android17-6.6 branch, but that patch does apply to 6.6.142 (19 hunks, 0
-#     failures, 1 hunk at fuzz 1), so the branch is now pinned to a commit and
-#     the result is recorded in SUSFS_STATUS rather than assumed.
+#     failures, 1 hunk at fuzz 1). The branch head is tracked on purpose, not
+#     pinned to a commit, and the commit that was actually used is recorded in
+#     SUSFS_STATUS rather than assumed.
 #
 #   * AutoFDO now uses the profile that ships IN THIS TREE
 #     (android/gki/aarch64/afdo/kernel.afdo, collected on 6.6.129) instead of
@@ -63,6 +64,17 @@ name: Build Onyx Kernel
 #     right there in the commit. That is how the first run failed.
 #
 # Not ported: BBRv3, NTSYNC, Baseband-guard (absent from 6.6.142).
+#
+# There is deliberately NO "trim debug features" input. One existed, and it
+# cost us a bricked device: turning off 14 debug symbols (UBSAN, CLEANCACHE,
+# DEBUG_MEMORY_INIT, ...) made the kernel hang on the Xiaomi logo. A
+# single-variable bisect with LTO and AutoFDO both ON identified it as the
+# cause. What makes it worth recording is that the cost measured as
+# "20 symbols, all debug-only" and every config gate stayed green the whole
+# time -- diffing .config files shows what disappeared, never whether the
+# kernel still behaves the same way. CLEANCACHE is the Qualcomm tmem victim
+# cache consulted during page reclaim, so it changes a runtime decision
+# rather than just emitting diagnostics. See README-build-onyx.md section 11.
 
 env:
   CLANG_VERSION: clang-r596125

@@ -31,6 +31,16 @@
 # olddefconfig sail through. There is no `set -u` because BTF_UNAVAILABLE
 # is legitimately unset on the common path.
 #
+# DO NOT add an option that turns a symbol off. This script used to carry a
+# debug-reduction input that did exactly that, and it bricked the device:
+# the kernel hung on the logo until the reduction was removed. The cost had
+# been measured as "20 symbols, all debug-only" and all three gates stayed
+# green, because diffing .config files shows what disappeared but not
+# whether the kernel still behaves the same. CLEANCACHE is the Qualcomm
+# tmem victim cache consulted during page reclaim, so it changes a
+# runtime decision, not just diagnostics. Fragments are additive for a
+# reason that is now backed by a real boot.
+#
 set -e
 
 export ARCH=arm64 SUBARCH=arm64

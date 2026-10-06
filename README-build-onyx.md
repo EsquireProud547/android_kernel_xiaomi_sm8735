@@ -121,6 +121,38 @@ git ls-files --cached .github/actions/    # 三个文件都必须在
 实测它确实开着（`GKI_DYNAMIC_TASK_STRUCT_SIZE=y`，由 base 提供），
 且 `gki_defconfig` 基线在本地 `olddefconfig` 往返后**零漂移**（`diffconfig` 的 `^-` 行为 0）。
 
+### 1.7 Droidspaces 配置跟上上游（2026-10-04）
+
+对照 `ravindu644/Droidspaces-OSS` 的 `Documentation/Kernel-Configuration.md`
+（commit `92cee27`）的 GKI 配置块，补齐了 9 个此前没有的符号：
+
+| 组 | 符号 |
+|---|---|
+| NAT66 | `IP6_NF_NAT` `IP6_NF_TARGET_MASQUERADE` |
+| UFW | `NETFILTER_XT_TARGET_LOG` `NETFILTER_XT_MATCH_RECENT` |
+| fail2ban | `IP_SET` `IP_SET_HASH_IP` `IP_SET_HASH_NET` `NETFILTER_XT_SET` |
+| NixOS | `TMPFS_XATTR` |
+
+**两个符号刻意不加**，理由和上游一致：
+
+- `CONFIG_CFS_BANDWIDTH` / `CONFIG_CGROUP_PIDS`（`--cpus` 和 `--pids-limit`）
+  会改变调度器与 cgroup 结构体大小，数千个导出符号的 CRC 随之改变，原厂
+  `vendor_dlkm` 模块拒绝加载，设备变砖。新字段塞不进 `ANDROID_KABI_RESERVE`
+  预留位，所以 `droidspaces_sysvipc.patch` 救不了。上游自己也把它们注释掉了。
+  `CONFIG_MEMCG` 基线本来就是 `=y`，所以 `--memory` 可用。
+- `CONFIG_NETFILTER_XT_TARGET_REJECT` 在 6.6 已不存在。REJECT 目标现由
+  `CONFIG_IP_NF_TARGET_REJECT` / `CONFIG_IP6_NF_TARGET_REJECT` 提供，
+  两者在 `gki_defconfig` 里已经是 `=y`。照抄旧名字会被 `olddefconfig` 丢弃，
+  然后闸门 3 判它为「请求开启却被丢弃」而**让构建失败**。
+
+`CONFIG_CGROUP_DEVICE` 在上游的非 GKI 块里有、GKI 块里没有（虽然上游的
+「缺少后果」表把它标为致命）。它在 6.6 无 Kconfig 依赖、也不在冻结 kABI
+列表里，但 stock onyx 同样没开，且上游刻意不把它列入实测过的 kABI 安全集合，
+所以不加。
+
+这 9 个符号都不在 `android/abi_gki_aarch64.stg` 里。验证方式是真跑一遍
+config 合成（闸门 1/2/3 全过），不是照着文档抄。
+
 ---
 
 ## 2. 配置合成
@@ -252,13 +284,29 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 
 ## 8. 维护提示
 
-改 fragment 前先读 `arch/arm64/configs/onyx_gki.fragment` 顶部的两条规则——
+### 改 fragment 前先读 `onyx_gki.fragment` 顶部的两条规则
+
 它们不是建议，是闸门 1 和闸门 3 的直接后果：
 
 1. 绝不要设基线里已经是 `=y` 或 `=m` 的符号 → merge_config 报 override → 构建失败。
 2. 绝不要设依赖无法满足的符号 → `olddefconfig` 静默丢弃 → 闸门 3 失败。
 
-**BTF 两条铁律**：
+### 第三条：**绝不要关掉基线已有的符号**
+
+这条是**真机刷出来**的，代价是一台变砖的设备。
+
+本仓库一度有一个 `reduce_debug` 开关，关掉 14 个调试符号
+（UBSAN、`CLEANCACHE`、`DEBUG_MEMORY_INIT` 等），内核随即卡在小米 logo
+上不开机。单一变量法排除后确认是它，与 LTO、AutoFDO 无关。
+
+麻烦的地方在于：**当时测出来的代价是"20 个符号，全是调试功能"，
+而且三道闸门全程绿灯。** `.config` 文本对比只能看出什么消失了，
+看不出内核行为是否还一样。`CLEANCACHE` 是 Qualcomm tmem 的受害者缓存，
+PFRA 换页时会被查询——它改变的是运行时决策，不是诊断输出。
+
+所以：想要"更干净"的配置之前，先想清楚它在真机上做什么。
+
+### BTF 两条铁律
 
 - `CONFIG_DEBUG_INFO_BTF` 必须保持开。
 - `CONFIG_DEBUG_INFO_REDUCED` 必须保持关。
@@ -277,8 +325,11 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | kABI 机制 | `ANDROID_KABI_RESERVE` | 同上，**外加** `GKI_DYNAMIC_TASK_STRUCT_SIZE` |
 | dtsi | 160（无 onyx） | 160（无 onyx） |
 | 配置合成 | 官方 Kleaf + 三闸门 | **相同，未改动** |
+| 调试裁剪 | 保留（`reduce_debug`） | **已删除**（它就是变砖元凶，见 §11） |
+| Droidspaces 配置 | 旧版 GKI 块 | **跟上 2026-10-04 上游**，见 §1.7 |
 
-6.6.82 那棵树仍在维护，两套并行。
+6.6.82 那棵树仍在维护，两套并行。本树的裁剪删除**没有**同步过去，
+所以那棵树上的 `reduce_debug` 仍然是默认开启的。
 
 ---
 
@@ -293,7 +344,8 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101213666886` | ✅ | 19/19 步全过，**刷入后设备正常开机**（LTO/AutoFDO/裁剪 三者全关） |
 | 第五次（排除法） | ✅ | 只关裁剪、保留 LTO + AutoFDO，**设备正常开机、功能全正常** → 定位到裁剪 |
 
-前三次分别对应本文 §1.5、§11（第二次）、§15（第三次）。第四次见 §16、§17；第五次（开机成功）见 §12。
+前三次分别对应本文 §1.5、§12（第二次）、§14（第三次）。第四次见 §15、§16；
+第五次（开机成功）见 §11。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
 一条。补丁文件从未进仓库，但 `git status` 是干净的，工作流照常入库。详见 §1.5。
@@ -305,7 +357,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 `--version` 输出里 `sed` 解析，并保留「低于 17 就早失败」的原意
 （`arch/Kconfig:804` 的 `AUTOFDO_CLANG depends on CLANG_VERSION >= 170000`）。
 
-**第三次**：**上游回归**，见 §13。
+**第三次**：**上游回归**，见 §14。
 
 ### 第三次运行的配置结果（全部正确）
 
@@ -760,30 +812,9 @@ make 层面的，无害。
 
 ## 16. 配置审计：我们相对纯基线改了什么
 
-这是最值得看的一节。用 `diffconfig` 对比「`gki_defconfig` 单独生成的 .config」
-与「我们完整流水线生成的 .config」。
-
-> 下表是**裁剪还在时**的统计（52 行）。裁剪整块删除后，差异只剩性能调优和
-> 功能增强两部分，`UBSAN` / `CLEANCACHE` / `DEBUG_MEMORY_INIT` 等一律跟随基线开启。
-> 这里保留原始记录，因为它同时是一个教训：**当时我在这 20 个符号里
-> 没看出任何能导致变砖的东西，结果它就是元凶。** `.config` 文本对比
-> 证明不了运行时等价，详见第 11 节。
-
-### （已删除）曾经的调试裁剪：14 个请求，20 个符号消失
-
-```
- BT_DEBUGFS y -> n        CLEANCACHE y -> n       CMA_DEBUGFS y -> n
- DEBUG_MEMORY_INIT y -> n DEBUG_MISC y -> n       PRINTK_CALLER y -> n
- PRINTK_TIME y -> n      RCU_TRACE y -> n        UBSAN y -> n
--CC_HAS_UBSAN_ARRAY_BOUNDS y                      -TEST_UBSAN n
--UBSAN_ARRAY_BOUNDS y   -UBSAN_BOOL n   -UBSAN_BOUNDS y   -UBSAN_ENUM n
--UBSAN_LOCAL_BOUNDS y   -UBSAN_SANITIZE_ALL y     -UBSAN_SHIFT n
--UBSAN_TRAP y           -UBSAN_UNREACHABLE n
-```
-
-当时我判断"除 UBSAN 及其依赖外没有任何附带损失"——**这个判断是错的**。
-其中 `CLEANCACHE`（Qualcomm tmem 受害者缓存，PFRA 换页时走）会改变
-内存回收决策。保留这段记录作为反例。
+用 `diffconfig` 对比「`gki_defconfig` 单独生成的 `.config`」与「我们完整流水线
+生成的 `.config`」。下面是**裁剪删除之后重新实测**的结果，共 **52 行差异**，
+全部是 `n -> y` 或选择组切换，没有一项是关掉基线已有的东西。
 
 ### 性能调优
 
@@ -795,19 +826,45 @@ make 层面的，无害。
  ZRAM_DEF_COMP_LZORLE y -> n
 ```
 
-### 容器兼容
+### 容器兼容（Droidspaces）
 
 ```
  DEVTMPFS n -> y        PID_NS n -> y            POSIX_MQUEUE n -> y
  SYSVIPC n -> y         USER_NS n -> y           TMPFS_POSIX_ACL n -> y
  TMPFS_XATTR n -> y     NETFILTER_XT_MATCH_ADDRTYPE n -> y
  +IPC_NS y  +POSIX_MQUEUE_SYSCTL y  +SYSVIPC_COMPAT y  +SYSVIPC_SYSCTL y
+ +DEVTMPFS_MOUNT n  +DEVTMPFS_SAFE n
 ```
 
-后四个新出现的符号都是 `default y` / `def_bool y` 的内部符号
-（`init/Kconfig:403/409/429`），被 `SYSVIPC` / `POSIX_MQUEUE` 带出来。
-`TMPFS_XATTR` 是 `TMPFS_POSIX_ACL` 的 `select`（`fs/Kconfig:191`）——我们没请求它，
-但 POSIX ACL 本来就需要 xattr 支持。
+后四个 IPC 符号是 `default y` 的内部符号（`init/Kconfig:403/409/429`），
+被 `SYSVIPC` / `POSIX_MQUEUE` 带出来。`TMPFS_XATTR` 最初是被
+`TMPFS_POSIX_ACL` 的 `select`（`fs/Kconfig:191`）顺带带出的，现在已经是
+`onyx_gki.fragment` 里显式请求的一项（Droidspaces 的 NixOS 支持）。
+
+### NAT66 / UFW / fail2ban（Droidspaces，上游 GKI 块）
+
+```
+ IP6_NF_NAT n -> y       +IP6_NF_TARGET_MASQUERADE y
+ NETFILTER_XT_TARGET_LOG n -> y  NETFILTER_XT_MATCH_RECENT n -> y
+ IP_SET n -> y  +IP_SET_HASH_IP y  +IP_SET_HASH_NET y  +NETFILTER_XT_SET y
+ +NF_LOG_SYSLOG y  +NF_LOG_IPV6 y  +IP6_NF_TARGET_NPT y
+ +IP_SET_MAX 256  +NET_EMATCH_IPSET n
+```
+
+带 `+` 的都是被 `select` / `default` 带出来的内部符号。`IP_SET` 是
+menuconfig，它下面 15 种 set 类型全部出现在 diff 里，只有我们请求的
+`hash:ip` 和 `hash:net` 是 `y`，其余是 `n`——这是 kconfig 的正常展开。
+`IP6_NF_TARGET_NPT` 是 `IP6_NF_NAT` 块内的默认子项（SNPT / DNPT 目标）。
+
+这九个符号都不在 `android/abi_gki_aarch64.stg` 里，所以不触及冻结 kABI。
+
+### 曾经过的调试裁剪（已删除）
+
+裁剪还在时，这里还有第三组差异——20 个符号消失，包括 `CLEANCACHE`、
+`DEBUG_MEMORY_INIT`、整个 `UBSAN` 家族。当时我写的是"除 UBSAN 及其依赖
+外没有任何附带损失"，**这个判断是错的**，其中 `CLEANCACHE` 会改变内存
+回收决策，真机直接变砖。原始 diff 不再列出，但把它记在这里作为反例：
+`.config` 文本对比证明不了运行时等价。详见第 11 节。
 
 ### Xiaomi vendor 的 4 个 `=y`
 
