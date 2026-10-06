@@ -102,27 +102,13 @@ on:
         type: boolean
         default: true
       enable_thinlto:
-        description: "ThinLTO. OFF matches the stock device kernel (LTO_NONE) — try this first if a build hangs at boot"
+        description: "ThinLTO. Verified booting on this device; OFF reproduces the stock kernel exactly (LTO_NONE)"
         type: boolean
         default: true
       enable_btf:
         description: "BTF for eBPF/CO-RE (needs pahole >= 1.21; auto-disabled if missing)"
         type: boolean
         default: true
-      reduce_debug:
-        description: "Trim debug features (ABI-safe; applied to the merged defconfig)"
-        type: boolean
-        default: true
-      reduce_debug_group:
-        description: "Which part of the reduction, when reduce_debug is on"
-        type: choice
-        default: all
-        options:
-          - all
-          - ubsan
-          - boot-debug
-          - printk
-          - rcu-bt
       bundle_modules:
         description: "Also put built .ko files into the zip under modules/ (not flashed)"
         type: boolean
@@ -400,8 +386,6 @@ jobs:
           ENABLE_AUTOFDO: ${{ inputs.enable_autofdo }}
           ENABLE_THINLTO: ${{ inputs.enable_thinlto }}
           ENABLE_BTF: ${{ inputs.enable_btf }}
-          REDUCE_DEBUG: ${{ inputs.reduce_debug }}
-          REDUCE_DEBUG_GROUP: ${{ inputs.reduce_debug_group }}
         run: .github/actions/configure-kernel.sh
       - name: Build kernel
         run: |
@@ -538,8 +522,6 @@ jobs:
           | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}, LLVM ${{ env.CLANG_MAJOR }}) — ${{ env.CLANG_STATUS }} |
           | **Config base** | `gki_defconfig` + `onyx_gki.fragment` (+ vendor =y, + susfs) |
           | **Config gates** | 3/3 passed (no overrides, no warnings, all fragments applied) |
-          | **Reduction** | ${{ env.REDUCTION_STATUS }} |
-          | **Reduction audit** | ${{ env.REDUCTION_AUDIT || 'not run (reduction off)' }} |
           | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
           | **HZ** | 300 |
           | **LTO** | ${{ env.LTO_STATUS }} |

@@ -14,7 +14,6 @@
 #
 #   ENABLE_SUSFS=true ENABLE_VENDOR_MODULES=true \
 #   ENABLE_AUTOFDO=false ENABLE_THINLTO=false ENABLE_BTF=true \
-#   REDUCE_DEBUG=false REDUCE_DEBUG_GROUP=all \
 #   GITHUB_ENV=/tmp/gh_env ./.github/actions/configure-kernel.sh
 #
 # which is how it is tested.
@@ -22,8 +21,6 @@
 # Inputs (all supplied as environment variables by the workflow step):
 #   ENABLE_SUSFS, ENABLE_VENDOR_MODULES, ENABLE_AUTOFDO, ENABLE_THINLTO,
 #   ENABLE_BTF            booleans, as "true"/"false"
-#   REDUCE_DEBUG          boolean
-#   REDUCE_DEBUG_GROUP    all | ubsan | boot-debug | printk | rcu-bt
 # From the workflow-level env: CLANG_VERSION, VENDOR_FRAGMENT,
 # KERNEL_CODENAME, SUSFS_BRANCH. From an earlier step: BTF_UNAVAILABLE.
 #
@@ -56,7 +53,6 @@ export ARCH=arm64 SUBARCH=arm64
 
 BASE_DEFCONFIG=arch/arm64/configs/gki_defconfig
 TUNING_FRAGMENT=arch/arm64/configs/onyx_gki.fragment
-DEBUG_FRAGMENT=arch/arm64/configs/onyx_debug_reduction.fragment
 SUSFS_FRAGMENT=arch/arm64/configs/onyx_susfs.fragment
 MERGED_DEFCONFIG=onyx_gki_defconfig
 MERGED_PATH="out/arch/arm64/configs/$MERGED_DEFCONFIG"
@@ -207,10 +203,7 @@ echo "CODEGEN: clang $CLANG_VERSION / LTO=$LTO_STATUS / AutoFDO=$AUTOFDO_STATUS"
 #
 # The vendor build's fragments are strictly additive: anything that
 # flips a value the base already sets is an accident (two fragments
-# disagreeing) and must fail loudly. The debug reduction below is the
-# one deliberate exception, and it is therefore NOT a fragment -- it
-# is applied to the merged defconfig after the merge and before make,
-# which keeps this gate strict and still lets gate 3 see the truth.
+# disagreeing) and must fail loudly.
 mkdir -p out/arch/arm64/configs
 MERGE_OUT=$(mktemp)
 KCONFIG_CONFIG="$PWD/$MERGED_PATH" \
@@ -230,43 +223,12 @@ echo "  [gate 1/3] no overridden values"
 # Fragments are additive-only, so anything that flips a value the
 # base already sets has to happen here -- still BEFORE make, so that
 # gate 3's diffconfig stays a real assertion.
+#
+# There is exactly one, and it is a drop rather than a setting: see
+# the UAPI_HEADER_TEST comment below.
 OVERRIDE_ARGS=""
-if [ "$REDUCE_DEBUG" = "true" ]; then
-  # The fragment carries "#@GROUP: <name>" markers. "all" takes
-  # every symbol; any other value takes just that group, so a
-  # suspected offender can be bisected without a new fragment.
-  REDUCE_GROUP="$REDUCE_DEBUG_GROUP"
-  case "$REDUCE_GROUP" in
-    all)      GROUP_RE='^#@GROUP: ' ;;
-    *)        GROUP_RE="^#@GROUP: $REDUCE_GROUP\$" ;;
-  esac
-  IN_GROUP=0
-  REDUCED_SYMS=""
-  while IFS= read -r line; do
-    case "$line" in
-      '#@GROUP: '*) if [[ "$line" =~ $GROUP_RE ]]; then IN_GROUP=1; else IN_GROUP=0; fi; continue ;;
-    esac
-    [ "$IN_GROUP" = "1" ] || continue
-    case "$line" in
-      CONFIG_*)                  OVERRIDE_ARGS="$OVERRIDE_ARGS -e ${line%%=*}"
-                                  REDUCED_SYMS="$REDUCED_SYMS ${line%%=*}" ;;
-      "# CONFIG_"*" is not set") sym=$(echo "${line#\# }" | cut -d' ' -f1)
-                                  OVERRIDE_ARGS="$OVERRIDE_ARGS -d $sym"
-                                  REDUCED_SYMS="$REDUCED_SYMS $sym" ;;
-    esac
-  done < "$DEBUG_FRAGMENT"
-  REDUCED_COUNT=$(echo $REDUCED_SYMS | wc -w)
-  if [ "$REDUCED_COUNT" -eq 0 ]; then
-    echo "::error::reduce_debug_group='$REDUCE_GROUP' matched no symbols in $DEBUG_FRAGMENT"
-    exit 1
-  fi
-  echo "  debug reduction: $REDUCED_COUNT symbols (group: $REDUCE_GROUP)"
-  echo "  reducing:$REDUCED_SYMS" | tr ' ' '\n' | sed 's/^/    /'
-  echo "REDUCTION_STATUS=applied ($REDUCED_COUNT symbols, group=$REDUCE_GROUP)" >> $GITHUB_ENV
-else
-  echo "  debug reduction disabled, keeping the GKI base defaults"
-  echo "REDUCTION_STATUS=disabled" >> $GITHUB_ENV
-fi
+
+OVERRIDE_ARGS=""
 
 if [ "$BTF_OFF" = "1" ]; then
   # DEBUG_INFO_BTF_MODULES must go too, and so must the symbol that
@@ -286,13 +248,6 @@ fi
 # from it in a shipping kernel and it costs build time, so drop the
 # request rather than weakening the gate.
 OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_UAPI_HEADER_TEST"
-
-# Keep a pre-reduction copy of the merged defconfig. It is the input
-# to the reduction audit below, which is the only thing in this
-# pipeline that verifies the debug reduction stays ABI- and
-# feature-safe rather than merely documenting that it should be.
-MERGED_NOREDUCE_PATH="$MERGED_PATH.noreduce"
-cp "$MERGED_PATH" "$MERGED_NOREDUCE_PATH"
 
 if [ -n "$OVERRIDE_ARGS" ]; then
   # shellcheck disable=SC2086
@@ -411,70 +366,7 @@ if [ "$ENABLE_AUTOFDO" != "true" ]; then
 fi
 echo "  [codegen] $(grep -E '^(CONFIG_LTO_NONE|CONFIG_LTO_CLANG_THIN|CONFIG_AUTOFDO_CLANG)=' out/.config | tr '\n' ' ')"
 
-# ---- REDUCTION AUDIT: the debug list must cost nothing real ------
-#
-# Gates 1-3 all check that what we ASKED for happened. None of them
-# can see what a fragment does not ask for but loses anyway, because
-# olddefconfig drops such a symbol quietly and the kernel still
-# compiles. That failure mode is not hypothetical: adding
-# CONFIG_PROFILING to onyx_debug_reduction.fragment costs ten
-# symbols on this tree -- ARM_PMU, ARM_PMUV3, HAVE_HW_BREAKPOINT,
-# HW_PERF_EVENTS, BPF_EVENTS, BPF_LSM, UPROBES, UPROBE_EVENTS,
-# GUEST_PERF_EVENTS, UID_SYS_STATS -- i.e. every hardware
-# performance counter, all uprobe support and BPF LSM, from a build
-# that exits 0. Shipping BTF for eBPF while BPF_LSM is gone is
-# self-defeating, and nothing else in this pipeline would notice.
-#
-# So: build the same config twice, once with the reduction and once
-# without, and require every difference to be on the allow-list.
-if [ "$REDUCE_DEBUG" = "true" ]; then
-  rm -rf out_noreduce
-  mkdir -p out_noreduce
-  cp "$MERGED_NOREDUCE_PATH" out_noreduce/.config
-  # The reference must differ from the real config ONLY by the reduction, so
-  # it needs the same non-reduction overrides applied. Without this it still
-  # carries CONFIG_UAPI_HEADER_TEST=y and the audit reports that as a
-  # violation -- found by running this script locally with the default
-  # reduce_debug=true, which had never happened before because every run so
-  # far either predated the audit or had the reduction switched off.
-  scripts/config --file out_noreduce/.config -d CONFIG_UAPI_HEADER_TEST
-  if make O=out_noreduce CC=clang LLVM=1 LLVM_IAS=1 olddefconfig >/dev/null 2>&1 \
-     && scripts/diffconfig out_noreduce/.config out/.config > "$MERGE_OUT"; then
-    # UBSAN and its dependents may go; the eight debug knobs are the
-    # point of the list. Nothing else is allowed to change.
-    ALLOWED_EXACT="BT_DEBUGFS CLEANCACHE CMA_DEBUGFS DEBUG_MEMORY_INIT \
-                   DEBUG_MISC PRINTK_CALLER PRINTK_TIME RCU_TRACE \
-                   CC_HAS_UBSAN_ARRAY_BOUNDS TEST_UBSAN"
-    VIOLATIONS=""
-    while IFS= read -r line; do
-      [ -z "$line" ] && continue
-      sym=$(echo "$line" | sed -E 's/^[-+ ]//; s/ .*//; s/^([A-Za-z0-9_]+)=.*/\1/')
-      case "$sym" in
-        UBSAN*) continue ;;
-      esac
-      allowed=0
-      for a in $ALLOWED_EXACT; do [ "$sym" = "$a" ] && allowed=1; done
-      [ "$allowed" -eq 0 ] && VIOLATIONS="$VIOLATIONS$line"$'\n'
-    done < "$MERGE_OUT"
-    if [ -n "$VIOLATIONS" ]; then
-      echo "========================================================"
-      echo "::error::debug reduction removed symbols that are not debug features"
-      printf "%s" "$VIOLATIONS"
-      echo "Every one of those is off, not just UBSan. See the DO NOT ADD"
-      echo "CONFIG_PROFILING block in $DEBUG_FRAGMENT -- this is exactly the"
-      echo "cascade that block warns about, and it does not fail the build."
-      exit 1
-    fi
-    REDUCED=$(grep -cvE '^[[:space:]]*$' "$MERGE_OUT" || true)
-    echo "  [audit] reduction costs $REDUCED symbols, all UBSan/debug-only"
-    echo "REDUCTION_AUDIT=passed ($REDUCED symbols, all allow-listed)" >> $GITHUB_ENV
-  else
-    echo "::warning::reduction audit could not run; continuing"
-  fi
-  rm -rf out_noreduce
-fi
-
-rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT" "$MERGED_NOREDUCE_PATH"
+rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT"
 
 # ---- feature status ----------------------------------------------
 grep -q "^CONFIG_SYSVIPC=y" out/.config \

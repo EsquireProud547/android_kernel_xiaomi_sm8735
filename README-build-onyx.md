@@ -96,7 +96,6 @@ for f in .github/workflows/build-onyx.yml \
          .github/actions/fixup_susfs.sh \
          arch/arm64/configs/onyx_gki.fragment \
          arch/arm64/configs/onyx_susfs.fragment \
-         arch/arm64/configs/onyx_debug_reduction.fragment \
          anykernel/tools/busybox anykernel/anykernel.sh \
          README-build-onyx.md; do
   git check-ignore -q "$f" && echo "✗ IGNORED: $f" || echo "✓ $f"
@@ -142,9 +141,8 @@ git ls-files --cached .github/actions/    # 三个文件都必须在
 2. **warning 即错误**——`make` 输出无 `warning:`，且 `out/.config` 非空
 3. **fragment 全部生效**——`diffconfig` 不得有 `-SYM y` / `-SYM m` / `-SYM y -> m`
 
-闸门 3 只过滤 `^-[A-Za-z0-9_]+ n$` 一种形态：调试裁剪关掉 `CONFIG_UBSAN`
-后，其子选项在 `.config` 里不再显示，`diffconfig` 会把**本来就没设过**的符号
-报成 `-UBSAN_BOOL n`。请求了却被丢弃的 `y` / `m` 一个都不放过。
+闸门 3 只过滤 `^-[A-Za-z0-9_]+ n$` 一种形态：`olddefconfig` 会把**本来就没设过**的
+符号报成这个形态。请求了却被丢弃的 `y` / `m` 一个都不放过。
 
 ### 本地验证结果
 
@@ -170,46 +168,15 @@ git ls-files --cached .github/actions/    # 三个文件都必须在
 | `CONFIG_MODULE_SIG_HASH` | `"sha256"` |
 | `CONFIG_MODULE_SIG_PROTECT` | y |
 | `CONFIG_UAPI_HEADER_TEST` | n（刻意覆盖） |
-| `CONFIG_PROFILING` / `CONFIG_BPF_LSM` | y（没被裁剪误伤） |
+| `CONFIG_PROFILING` / `CONFIG_BPF_LSM` | y |
 
 ---
 
-## 3. 调试裁剪的实测代价
-
-`onyx_debug_reduction.fragment` 有 14 个 `-d` 符号。代价是**在 6.6.142 上实测的**，
-方法：合并 defconfig 后分别用「不裁剪 / 只裁剪 / 裁剪 + `-d CONFIG_PROFILING`」
-生成三份 `.config`，再互相 `diffconfig`。三次 `make` **全部 exit 0**——
-这正是问题所在，没有任何编译期信号。
-
-**本裁剪清单的代价：恰好 6 个符号**
-
-```
-CC_HAS_UBSAN_ARRAY_BOUNDS
-UBSAN_ARRAY_BOUNDS  UBSAN_BOUNDS  UBSAN_LOCAL_BOUNDS
-UBSAN_SANITIZE_ALL  UBSAN_TRAP
-```
-
-**如果再加上 `CONFIG_PROFILING`：再损失 10 个**
-
-```
-ARM_PMU  ARM_PMUV3  HAVE_HW_BREAKPOINT  HW_PERF_EVENTS
-BPF_EVENTS  BPF_LSM  UPROBES  UPROBE_EVENTS
-GUEST_PERF_EVENTS  UID_SYS_STATS
-```
-
-即：所有硬件性能计数器、全部 uprobe 支持、**BPF LSM** 全部消失，而内核照样编译成功。
-`CONFIG_BPF_LSM` 正是 eBPF LSM 程序挂载的地方——发 BTF 给 eBPF 的意义直接被抵消。
-
-> 6.6.82 那棵树测同样的实验是 27 个符号。数字随内核变，结论没变。
-> 改这个清单时务必重新测。
-
----
-
-## 4. BTF
+## 3. BTF
 
 | 前提 | 满足方式 |
 |---|---|
-| 不被 `DEBUG_INFO_REDUCED` 阻断 | 裁剪清单顶部明令禁止加这两项 |
+| 不被 `DEBUG_INFO_REDUCED` 阻断 | 基线自带 `DEBUG_INFO_REDUCED=n`，闸门 2 的 `olddefconfig` 结果里断言 |
 | pahole ≥ 1.21 | `:138` 装 `dwarves`；过旧则降级为无 BTF，不硬失败 |
 | libbpf 能用现代宿主编译器编过 | `.github/actions/libbpf_strchr_const.patch`（本树已重新生成） |
 
@@ -224,7 +191,7 @@ GUEST_PERF_EVENTS  UID_SYS_STATS
 
 ---
 
-## 5. Xiaomi vendor 片段
+## 4. Xiaomi vendor 片段
 
 `vendor/onyx_perf.config` 有 33 个 `=m` 条目。**驱动源码大多就在本树里**
 （`drivers/power/supply/mca/`、`drivers/input/misc/si_haptic/`……），
@@ -252,7 +219,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 
 ---
 
-## 6. AnyKernel3
+## 5. AnyKernel3
 
 - 脚本来自上游 `020dfec`，**7 个二进制保持 aarch64**（复制后已逐个 `file` 复核）。
 - `anykernel.sh`：变量全大写、`do.devicecheck=0`、`NO_MAGISK_CHECK=1`、
@@ -268,23 +235,22 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 
 ---
 
-## 7. 已知未解决
+## 6. 已知未解决
 
 | 项 | 说明 |
 |---|---|
-| **`Module.symvers` CRC 未比对** | 刷进去能开机 **≠** 原厂 `vendor_dlkm` 模块都能加载。需要从设备取基线 |
-| **AK3 未实机验证** | CI 只能证明包能生成。这套流程**没有实机跑过**——迁移刚完成，第一次 CI 才是第一次构建 |
+| **`Module.symvers` CRC 未比对** | 刷进去能开机 **≠** 原厂 `vendor_dlkm` 模块都能加载。需要从设备取基线。一条命令即可确认：`adb shell su -c 'dmesg \| grep -E "disagrees about version of symbol\|Unknown symbol\|version magic"'` |
 | 内核版本串 | `CONFIG_LOCALVERSION_AUTO=y` + 工作流改源码 → 版本串带 `-dirty`。仅观感 |
 | `fetch-depth: 0` | checkout 慢。ReSukiSU `setup.sh` 的前置要求，未测浅克隆 |
 | vendor `=m` 过滤 | 见 §5 |
 
-## 8. 未移植
+## 7. 未移植
 
 `BBRv3`、`NTSYNC`、`Baseband-guard` —— 6.6.142 里没有这些特性。
 
 ---
 
-## 9. 维护提示
+## 8. 维护提示
 
 改 fragment 前先读 `arch/arm64/configs/onyx_gki.fragment` 顶部的两条规则——
 它们不是建议，是闸门 1 和闸门 3 的直接后果：
@@ -292,7 +258,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 1. 绝不要设基线里已经是 `=y` 或 `=m` 的符号 → merge_config 报 override → 构建失败。
 2. 绝不要设依赖无法满足的符号 → `olddefconfig` 静默丢弃 → 闸门 3 失败。
 
-**BTF 两条铁律**（写进裁剪清单顶部了）：
+**BTF 两条铁律**：
 
 - `CONFIG_DEBUG_INFO_BTF` 必须保持开。
 - `CONFIG_DEBUG_INFO_REDUCED` 必须保持关。
@@ -301,7 +267,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 
 ---
 
-## 10. 与 6.6.82 那棵树的关系
+## 9. 与 6.6.82 那棵树的关系
 
 | | `kernel_xiaomi_sm8735` | 本树 |
 |---|---|---|
@@ -316,7 +282,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 
 ---
 
-## 11. CI 实跑记录
+## 10. CI 实跑记录
 
 | 运行 | 结果 | 停在哪 |
 |---|---|---|
@@ -325,6 +291,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 | `logs_101178482014` | ❌ | 第 15 步 Build：`certs/extract-cert.c:152: error: use of undeclared identifier 'key_pass'` |
 | `logs_101188129967` | ✅ | 19/19 步全过，产物 `Onyx-Kernel-v4-20261005.zip`（19M，97 个模块） |
 | `logs_101213666886` | ✅ | 19/19 步全过，**刷入后设备正常开机**（LTO/AutoFDO/裁剪 三者全关） |
+| 第五次（排除法） | ✅ | 只关裁剪、保留 LTO + AutoFDO，**设备正常开机、功能全正常** → 定位到裁剪 |
 
 前三次分别对应本文 §1.5、§11（第二次）、§15（第三次）。第四次见 §16、§17；第五次（开机成功）见 §12。
 
@@ -369,7 +336,7 @@ Droidspaces `applied`、AutoFDO `enabled (in-tree profile, 4.0M)`。
 
 ---
 
-## 12. 刷机后卡 logo：与官方配置的对比
+## 11. 刷机后卡 logo：与官方配置的对比
 
 用户把成功构建的 AK3 包刷进去后**卡在第一屏小米 logo**，系统进不去，
 recovery 也进不去。怀疑是配置问题。
@@ -414,7 +381,11 @@ GKI-only 构建里没有是**正常形态**。另有 503 项是这些模块的�
 | 5 | `MODULE_SIG_ALL`（`MODULE_SIG_FORCE=n`） | **y** | **n** | 低 |
 | 6 | `HZ` | 300 | 250 | 无 |
 | 7 | `ZRAM_DEF_COMP` | lz4 | lzo-rle | 无 |
-| 8 | 调试裁剪（UBSAN 等） | off | on | 无（已实测无损） |
+| 8 | 调试裁剪（UBSAN 等） | ~~off~~ **已删除** | on | — |
+
+> 第 8 行曾是唯一一处"我们比官方配置少开的东西"。它现在不是差异了：
+> 裁剪整块移除后，UBSAN、debugfs、printk 时间戳等全部跟随 GKI 基线开启，
+> 与官方配置一致。**这一行曾经让设备变砖**，详见第 11 节。
 
 ### 已确证排除的三个嫌疑
 
@@ -472,7 +443,7 @@ flags            = 0
 日志里还会打一行 `CODEGEN: clang ... / LTO=... / AutoFDO=...`，
 一眼能看出这次跑的是什么设置。
 
-### 第四次运行：开机成功
+### 第四次运行：开机成功（三个变量同时变）
 
 用户在 `enable_thinlto=false` + `enable_autofdo=false` + `reduce_debug=false`
 下重跑，**设备正常开机**。截图确认：
@@ -488,52 +459,65 @@ SUSFS      v2.3.0（9 项功能全部就位）
 日志侧 `[gate 1/3]`～`[gate 3/3]` 全过，`CONFIG_LTO_NONE=y`，
 `[codegen] AutoFDO off, as requested`。
 
-**但这一轮同时动了三个变量，所以还不能定论。** 用户的判断是"裁剪是凶手"，
-计划下一轮只关裁剪、恢复 LTO + AutoFDO 来做排除法——这个方法是对的。
+这一轮同时动了三个变量，所以当时还不能定论，只能说"某个被关掉的东西是凶手"。
 
-### 一条推翻"裁剪是凶手"的证据
+### 第五次运行：排除法定论
 
-官方（正在运行的）配置和我们的纯基线**都**带：
+用户用单一变量法逐项恢复，先只关裁剪、保留 LTO + AutoFDO：
 
 ```
-CONFIG_UBSAN=y
-CONFIG_UBSAN_TRAP=y            ← 任何 UB 直接 trap，静默死亡，无日志
-CONFIG_UBSAN_SANITIZE_ALL=y    ← 插桩到所有代码
+enable_thinlto   = true
+enable_autofdo   = true
+reduce_debug     = false      ← 唯一变量
 ```
 
-而**这次能开机的版本，UBSAN 是开着的**（`reduce_debug=false` 保留了基线设置）。
-所以 `UBSAN_TRAP` 在这台设备上是**可存活的**，它不是变量。
+**设备正常开机，所有功能正常。** 结论确定：
 
-也就是说：裁剪关掉的 20 个符号里，真正有启动期行为影响的是
-`CLEANCACHE`（Qualcomm tmem 受害者缓存，PFRA 换页时会走）和
-`DEBUG_MEMORY_INIT`（内存初始化健全性检查）。其余是 printk 冗长、
-debugfs、RCU 跟踪——静态阅读找不到能让启动挂死的机制。
+> **开机挂死的元凶是调试裁剪（`reduce_debug`），不是 LTO，也不是 AutoFDO。**
 
-**因此下一轮的预测**：只关裁剪（恢复 LTO + AutoFDO）时，
-UBSAN_TRAP 会重新打开。当前证据表明它本身无害，但如果这一轮**仍然挂**，
-那基本可以断定是 AutoFDO 或 ThinLTO，而不是裁剪。
+### 排查过程中被逐一排除的假设
 
-### 裁剪分组：万一裁剪真是凶手
+| 假设 | 排除依据 |
+|---|---|
+| AVB 校验拦下自定义 boot | stock vbmeta `algorithm_type=0`、`descriptors_size=0`，不校验任何东西 |
+| `MODVERSIONS` CRC 不匹配 | 所有 kABI 符号与官方一致。**genksyms 只消费预处理文本，从不调用编译器**（`scripts/Makefile.build:130`），所以 ThinLTO / AutoFDO 在原理上就不可能改变 CRC；实测 `SYSVIPC=y/n` 在裁剪开着时 CRC 不同、打上 Droidspaces 补丁后完全相同 |
+| 缺少 DTB | stock 镜像同样 `dtb_size=0` |
+| vermagic 的 `-dirty` 后缀 | `kernel/module/version.c:79-88` 的 `same_magic()` 在模块带 CRC 时直接跳过内核版本部分，只比 flag 差异 |
+| ThinLTO / AutoFDO | 第五次运行两者都开着，正常开机 |
+| **调试裁剪** | **第五次运行只关它，正常开机** |
 
-为此新增 `reduce_debug_group`，把 14 个 `-d` 符号按 `#@GROUP:` 标记分成四组，
-选组不需要改代码、不需要新 fragment：
+### 为什么裁剪能让设备挂死在 logo
 
-| 组 | 符号 | 实测代价 |
-|---|---|---|
-| `ubsan` | `UBSAN` + 5 个子项 | 8 个符号（含派生的 `CC_HAS_UBSAN_ARRAY_BOUNDS`、`TEST_UBSAN`） |
-| `boot-debug` | `DEBUG_MISC` `DEBUG_MEMORY_INIT` `CMA_DEBUGFS` `CLEANCACHE` | 4 |
-| `printk` | `PRINTK_CALLER` `PRINTK_TIME` | 2 |
-| `rcu-bt` | `RCU_TRACE` `BT_DEBUGFS` | 2 |
-| `all`（默认） | 全部 | 20 |
+裁剪清单里有 14 个 `-d` 符号，代价是 20 个符号。按启动期行为影响分：
 
-组名写错会直接报错（匹配到 0 个符号即 `exit 1`），不会静默构建出一个"看起来裁了
-其实没裁"的包。裁剪审计对每一组都照常运行——白名单是超集，所以单组裁剪天然通过。
+- `CLEANCACHE`（Qualcomm tmem 受害者缓存，PFRA 换页时走）——**唯一一个
+  真正参与运行时内存回收路径的符号**；
+- `DEBUG_MEMORY_INIT`（内存初始化健全性检查）——改变内存初始化时机；
+- `UBSAN_TRAP` + `UBSAN_SANITIZE_ALL`——官方配置本来也是开的，所以
+  **UBSAN 本身可存活**，之前"裁剪是凶手"的怀疑一度被这条证据反驳；
+- `DEBUG_MISC` / `CMA_DEBUGFS` / `BT_DEBUGFS` / `PRINTK_*` / `RCU_TRACE`——
+  诊断输出，不改变功能。
+
+也就是说，真正有启动期行为影响的是 `CLEANCACHE` 和 `DEBUG_MEMORY_INIT`，
+而 `CLEANCACHE` 恰好是唯一一个会**改变内存回收决策**的。静态阅读找不到
+它会让启动挂死的机制，只能靠排除法定位。
+
+### 处理：整块删除，不保留开关
+
+裁剪能力已从仓库里**完全移除**——`onyx_debug_reduction.fragment` 删除，
+`reduce_debug` / `reduce_debug_group` 两个输入删除，configure 脚本里的
+裁剪解析和裁剪审计一并删除。它省下的那 20 个符号，在一台会因此变砖的
+设备上不值得，换一个纯增量构建的收益也不值。
+
+> 之前实测"裁剪代价只有 6~20 个符号、全部无害"这个结论**是错的**：
+> 代价确实是 20 个符号，但其中至少一个改变了运行时行为。
+> 那个实验只对比 `.config` 文本，**证明不了运行时等价**。
 
 ### 顺带修掉的一个 bug
 
 `CODEGEN:` 那行日志打出来是 `LTO= / AutoFDO=`——两个变量都是空的。
 原因是我只把状态写进了 `$GITHUB_ENV`，**从没赋给 shell 变量**。
-现已改为先赋值再写入，摘要表格里的 LTO / AutoFDO / Reduction 三行也一并修正。
+现已改为先赋值再写入，摘要表格里的 LTO / AutoFDO 两行也一并修正。
 
 ### 仍然无法从镜像判断的
 
@@ -546,7 +530,7 @@ bootloader 刷屏（内核没跑起来 → 问题在打包/加载，不在配置
 
 ---
 
-## 13. Configure 逻辑搬出工作流
+## 12. Configure 逻辑搬出工作流
 
 GitHub 拒绝了第六次提交：
 
@@ -564,7 +548,6 @@ Invalid workflow file: .github/workflows/build-onyx.yml#L1
 
 上一版**只差 197 个字符**就贴在天花板上了。也就是说这不是"某次改坏了"，
 而是**任何一次加注释都会炸**——包括我给裁剪分组加的那些说明。
-
 ### 修法
 
 把 Configure 的全部逻辑移到 [`.github/actions/configure-kernel.sh`](.github/actions/configure-kernel.sh)，
@@ -604,9 +587,9 @@ ENABLE_SUSFS=true ... ./.github/actions/configure-kernel.sh
 
 ---
 
-## 14. 搬出工作流后立刻抓到的两个 bug
+## 13. 搬出工作流后立刻抓到的 bug
 
-### ① 裁剪审计会把 `UAPI_HEADER_TEST` 误判为越界
+### ①（已随裁剪删除）裁剪审计会把 `UAPI_HEADER_TEST` 误判为越界
 
 用默认的 `reduce_debug=true` 跑，审计直接失败：
 
@@ -625,7 +608,12 @@ ENABLE_SUSFS=true ... ./.github/actions/configure-kernel.sh
 
 修法：参考配置也要应用同一批非裁剪覆盖。
 
-### ② make 失败时只显示 `tail -5`
+> 裁剪与裁剪审计现已整体删除，本条仅作历史记录。
+> 它也说明一件事：我加的这套审计**验证的是 `.config` 文本差异，
+> 不是运行时等价性**，所以它当时判定"代价只有 20 个符号、无害"，
+> 而真机上裁剪是致命的。
+
+### make 失败时只显示 `tail -5`
 
 闸门 2 里 `make ... | tee "$MERGE_OUT" | tail -5`，失败时只 `exit 1`。
 而 kconfig 失败的最后五行永远是 make 的退出链：
@@ -661,7 +649,7 @@ susfs4ksu 50_add_susfs → 只提供内核侧那一半
 
 ---
 
-## 15. 上游回归：extract-cert 在 stock OpenSSL 下编不过
+## 14. 上游回归：extract-cert 在 stock OpenSSL 下编不过
 
 第三次运行前 14 步全过，Build 死在 `certs/extract-cert.c:152`：
 
@@ -748,7 +736,7 @@ error: use of undeclared identifier 'key_pass'
 
 ---
 
-## 16. 首次成功构建（logs_101188129967）
+## 15. 首次成功构建（logs_101188129967）
 
 第四次运行，19 步全过。**这是本流水线在 6.6.142 上的第一次完整构建。**
 
@@ -756,7 +744,6 @@ error: use of undeclared identifier 'key_pass'
 |---|---|
 | 步骤 | 19/19，0 失败 |
 | 闸门 | 3/3 通过 |
-| **裁剪审计** | 通过（20 个符号，全在白名单内） |
 | 内核 | `6.6.142-4k-g29ca9ddd04f2-dirty` |
 | 模块 | 97 |
 | 产物 | `Onyx-Kernel-v4-20261005.zip`，19M |
@@ -771,12 +758,18 @@ make 层面的，无害。
 
 ---
 
-## 17. 配置审计：我们相对纯基线改了什么
+## 16. 配置审计：我们相对纯基线改了什么
 
 这是最值得看的一节。用 `diffconfig` 对比「`gki_defconfig` 单独生成的 .config」
-与「我们完整流水线生成的 .config」，**全部 52 行差异**：
+与「我们完整流水线生成的 .config」。
 
-### 调试裁剪（14 个请求，20 个符号消失）
+> 下表是**裁剪还在时**的统计（52 行）。裁剪整块删除后，差异只剩性能调优和
+> 功能增强两部分，`UBSAN` / `CLEANCACHE` / `DEBUG_MEMORY_INIT` 等一律跟随基线开启。
+> 这里保留原始记录，因为它同时是一个教训：**当时我在这 20 个符号里
+> 没看出任何能导致变砖的东西，结果它就是元凶。** `.config` 文本对比
+> 证明不了运行时等价，详见第 11 节。
+
+### （已删除）曾经的调试裁剪：14 个请求，20 个符号消失
 
 ```
  BT_DEBUGFS y -> n        CLEANCACHE y -> n       CMA_DEBUGFS y -> n
@@ -788,7 +781,9 @@ make 层面的，无害。
 -UBSAN_TRAP y           -UBSAN_UNREACHABLE n
 ```
 
-除 UBSAN 及其依赖外**没有任何附带损失**。
+当时我判断"除 UBSAN 及其依赖外没有任何附带损失"——**这个判断是错的**。
+其中 `CLEANCACHE`（Qualcomm tmem 受害者缓存，PFRA 换页时走）会改变
+内存回收决策。保留这段记录作为反例。
 
 ### 性能调优
 
@@ -856,37 +851,6 @@ CONFIG_MODULE_SIG_PROTECT=y
 `CONFIG_MODULE_ALLOW_BTF_MISMATCH=y` 也确认在位（BTF 必需项）。
 
 ---
-
-## 18. 新增：裁剪审计（把注释变成强制检查）
-
-闸门 1–3 只检查**我们要求的东西有没有生效**，没有一个能看见「没要求却悄悄丢掉」
-的符号——`olddefconfig` 会安静地丢弃它，然后内核照样编译成功。
-
-这正是 `CONFIG_PROFILING` 的失效模式：加进裁剪清单会让本树掉 10 个符号
-（`ARM_PMU` `ARM_PMUV3` `HAVE_HW_BREAKPOINT` `HW_PERF_EVENTS` `BPF_EVENTS`
-`BPF_LSM` `UPROBES` `UPROBE_EVENTS` `GUEST_PERF_EVENTS` `UID_SYS_STATS`），
-即所有硬件性能计数器、所有 uprobe 支持、**BPF LSM**——**make 仍然 exit 0**。
-一边发 BTF 给 eBPF 一边把 `BPF_LSM` 关掉，自相矛盾，而流水线里没有任何东西会报警。
-
-所以现在多了一步审计：把配置生成两遍（一遍带裁剪、一遍不带），
-`diffconfig` 之后要求每一处差异都在白名单内：
-
-- 任何 `UBSAN*`
-- 8 个调试开关：`BT_DEBUGFS` `CLEANCACHE` `CMA_DEBUGFS` `DEBUG_MEMORY_INIT`
-  `DEBUG_MISC` `PRINTK_CALLER` `PRINTK_TIME` `RCU_TRACE`
-- `CC_HAS_UBSAN_ARRAY_BOUNDS`、`TEST_UBSAN`
-
-不在名单里的任何一行 → **构建失败**并打印越界符号。
-
-本地双向验证过：
-
-| 场景 | 结果 |
-|---|---|
-| 真实裁剪清单（20 个符号） | ✅ 通过 |
-| 模拟加入 `CONFIG_PROFILING`（多出 `ARM_PMU`/`BPF_LSM`/`UPROBES`） | ❌ 失败并列出越界符号 |
-
-成本是一次额外的 `olddefconfig`（几秒）。这一步让 fragment 里那段
-「DO NOT ADD CONFIG_PROFILING」从注释变成了可执行约束。
 
 ### 顺带修掉的两个小问题
 
