@@ -158,25 +158,78 @@ jobs:
           # refs/heads/seventeen). The 6.6.82 tree used `oss`; do not copy that
           # over.
           ref: seventeen
-          fetch-depth: 0
+          # Shallow, and deliberately so. This repo has 1.26M commits and a
+          # full fetch measured 5m22s, roughly 23% of the whole run.
+          #
+          # Nothing here consumes the history:
+          #   - ReSukiSU's setup.sh runs git checkout/stash against the
+          #     KernelSU repository IT clones, not against this tree.
+          #   - susfs4ksu is cloned separately by the SUSFS step.
+          #   - the version string comes from scripts/setlocalversion, which
+          #     needs only `git rev-parse HEAD` plus `git rev-list --count
+          #     <tag>...HEAD` for its tag lookups.
+          #
+          # That last one is the only thing worth watching, and it is safe
+          # here for a specific reason: this repo has NO tags, so every
+          # try_tag attempt fails and the script falls through to printing
+          # `-g<HEAD>`. Verified by cloning --depth 1 and comparing the
+          # generated kernel.release against the full clone:
+          #     shallow: 6.6.142-g40822f8fd38d
+          #     full:    6.6.142-g40822f8fd38d
+          # If this repo ever gets tags, re-check that before trusting a
+          # shallow build again -- `git rev-list` against a tag outside the
+          # shallow window is where the behaviour would change.
+          fetch-depth: 1
+          show-progress: false
 
       - name: Fast cleanup + swap
         run: |
-          # Aggressive disk cleanup (make room for kernel src + 20GB swap)
+          # The rm -rf below is unconditional: those directories are pure
+          # profit, none of them is used by this build, and removing them
+          # costs seconds.
           sudo rm -rf \
             /usr/share/dotnet /usr/local/share/powershell \
             /opt/hostedtoolcache/go /usr/local/lib/android \
             /usr/share/swift /usr/local/share/boost 2>/dev/null || true
-          sudo apt-get remove -y -qq 2>/dev/null \
-            dotnet* aspnetcore* netstandard* mono* ^llvm-.* ^lld-.*  || true
-          sudo apt-get autoremove -y -qq 2>/dev/null || true
+
+          # The apt step is NOT unconditional. `apt-get remove` +
+          # `autoremove` cost 2m08s measured, because dpkg scans all 209,818
+          # files in the database twice, and on this image it reclaimed only
+          # liblldb-20 and liblldb-22. Meanwhile the ubuntu-26.04 runner
+          # ships a 145G root with ~107G free, and this build needs roughly
+          # 45G (source ~2.5G, out/ 15-20G, ccache 3G, clang 1G, swap 10G).
+          # Paying two minutes to win a couple of GB is the wrong trade, so
+          # only do it when the disk is actually tight.
+          # `df -k` (no -B) is the one to use here: its --output is a bare
+          # number in KiB. `df -BG` would print "107G" and `df -BK` prints
+          # "751499944K", neither of which is safe to compare numerically
+          # without stripping the suffix -- and stripping non-digits is how
+          # "1.1T" turns into "11" and the check decides the disk is full.
+          FREE_KIB=$(df -k --output=avail / | tail -1 | tr -d '[:space:]')
+          echo "  root free: $((FREE_KIB / 1024 / 1024))G"
+          if [ "$FREE_KIB" -lt $((60 * 1024 * 1024)) ]; then
+            echo "  tight, running apt cleanup"
+            sudo apt-get remove -y -qq 2>/dev/null \
+              dotnet* aspnetcore* netstandard* mono* ^llvm-.* ^lld-.*  || true
+            sudo apt-get autoremove -y -qq 2>/dev/null || true
+          else
+            echo "  skipping apt cleanup (not needed)"
+          fi
           df -h /
 
           # Always recreate swap: runner images may already ship an active one
           # and a bare `if` check misses that (see gki-clo 18e63ee0098f).
+          #
+          # 10G, not 20G. ThinLTO's link step is the memory peak, and swap is
+          # only a backstop for it; halving it saves ~25s of dd at ~465 MB/s.
+          # If a build ever OOMs during the link, put the count back to
+          # 20480 -- the cost of that mistake is 25 seconds.
+          #
+          # dd, not fallocate: a swap file may not have holes, and fallocate
+          # on ext4 produces one that swapon rejects with "Invalid argument".
           sudo swapoff -a 2>/dev/null || true
           sudo rm -f /swapfile /mnt/swapfile 2>/dev/null || true
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=20480 status=progress
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=10240 status=none
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile

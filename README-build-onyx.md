@@ -273,7 +273,6 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 |---|---|
 | **`Module.symvers` CRC 未比对** | 刷进去能开机 **≠** 原厂 `vendor_dlkm` 模块都能加载。需要从设备取基线。一条命令即可确认：`adb shell su -c 'dmesg \| grep -E "disagrees about version of symbol\|Unknown symbol\|version magic"'` |
 | 内核版本串 | `CONFIG_LOCALVERSION_AUTO=y` + 工作流改源码 → 版本串带 `-dirty`。仅观感 |
-| `fetch-depth: 0` | checkout 慢。ReSukiSU `setup.sh` 的前置要求，未测浅克隆 |
 | vendor `=m` 过滤 | 见 §5 |
 
 ## 7. 未移植
@@ -344,7 +343,7 @@ PFRA 换页时会被查询——它改变的是运行时决策，不是诊断输
 | `logs_101213666886` | ✅ | 19/19 步全过，**刷入后设备正常开机**（LTO/AutoFDO/裁剪 三者全关） |
 | 第五次（排除法） | ✅ | 只关裁剪、保留 LTO + AutoFDO，**设备正常开机、功能全正常** → 定位到裁剪 |
 
-前三次分别对应本文 §1.5、§12（第二次）、§14（第三次）。第四次见 §15、§16；
+前三次分别对应本文 §1.5、§12（第二次）、§14（第三次）。第四次见 §15、§17；
 第五次（开机成功）见 §11。
 
 **第一次**：`.gitignore` 有两条规则吞掉 CI 目录（`.*` 和 `*.patch`），我只处理了
@@ -800,7 +799,7 @@ error: use of undeclared identifier 'key_pass'
 | 模块 | 97 |
 | 产物 | `Onyx-Kernel-v4-20261005.zip`，19M |
 | 编译耗时 | 1014 s（≈17 min） |
-| checkout 耗时 | 355 s（`fetch-depth: 0`，126 万提交） |
+| checkout 耗时 | 355 s（当时为 `fetch-depth: 0`，126 万提交；**现已改为浅克隆**，见 §16） |
 | ccache | 命中恢复，仅 ~72 MB（首次冷编译） |
 | `.BTF` | `BTF_SECTIONS_IN_VMLINUX=ok` |
 | modpost | 0 个 undefined，0 错误，0 objtool 警告 |
@@ -810,7 +809,74 @@ make 层面的，无害。
 
 ---
 
-## 16. 配置审计：我们相对纯基线改了什么
+## 16. 构建耗时优化
+
+一次 CI 运行的实测分解（总 24m19s）：
+
+| 步骤 | 耗时 | 占比 |
+|---|---|---|
+| Checkout | 5m32s（其中 fetch 5m22s） | 22.7% |
+| Fast cleanup + swap | 3m02s | 12.5% |
+| **Build** | **14m28s** | **59.5%** |
+| 其余 15 步 | 合计 ~1m | — |
+
+Build 内部：并行编译 9m05s（ccache 命中 96.67%）→ ThinLTO 链接 4m00s（串行，
+无日志）→ modpost/BTF/kallsyms/Image 58s → 97 个模块链接 25s。
+
+### 已做：浅克隆
+
+`fetch-depth: 0` → `1`。本仓库 126 万提交，完整 fetch 5m22s，占整体 23%，
+而流水线里**没有任何地方消费 git 历史**：
+
+- ReSukiSU `setup.sh` 的 `git checkout` / `git stash` 作用于**它自己 clone 的
+  KernelSU 仓库**，不是内核树
+- susfs4ksu 在 SUSFS 步骤单独 clone
+- 版本串来自 `scripts/setlocalversion`，只需要 `git rev-parse HEAD`，以及
+  `git rev-list --count <tag>...HEAD` 做 tag 查找
+
+最后一条是唯一需要留意的地方，它安全**只因为本仓库一个 tag 都没有**：
+`try_tag` 每次都失败，脚本直接落到 `printf '%s%.12s' -g "$head"`。
+实测浅克隆与完整克隆产出**完全相同**的版本串：
+
+```
+浅克隆:   6.6.142-g40822f8fd38d
+完整克隆: 6.6.142-g40822f8fd38d
+```
+
+> 如果将来给这个仓库打 tag，浅克隆下 `git rev-list` 对浅窗口之外的 tag
+> 行为会变，届时要重新验证。
+
+### 已做：清理步骤瘦身
+
+`apt-get remove` + `autoremove` 实测 **2m08s**（dpkg 两次全库扫描 209,818 个
+文件），而在这台 runner 上只回收了 `liblldb-20` 和 `liblldb-22` 两个小包。
+`ubuntu-26.04` 镜像根盘 145G、可用约 107G，构建总需求约 45G，磁盘根本不紧张。
+现在这步用 `df -k` 判断，低于 60G 才执行。
+
+`rm -rf` 那几个目录（dotnet / swift / go / android / powershell / boost）
+**保持无条件**——它们构建完全用不到，删掉是纯收益，不该为省几秒而条件化。
+
+swap 从 20 GiB 降到 10 GiB，`dd` 改用 `status=none`（约省 25s）。
+LTO 链接段是内存峰值，swap 只是兜底；若真出现 OOM，把 `count` 改回
+`20480`，代价 25 秒。**必须用 `dd` 不能用 `fallocate`**——交换文件不允许有空洞，
+ext4 上 fallocate 出来的文件 `swapon` 直接报 `Invalid argument`。
+
+### 不做：合并四个小步骤
+
+`Install deps`(9.4s) + `Install pahole`(2.4s) + 两个 patch 步骤合计 12 秒，
+合并只省 10 秒。代价是这些步骤本来提供的**失败定位能力**——前三次 CI 失败
+分别死在第 6、9、15 步，一眼就能看出是谁的问题。不划算。
+
+### 不做：其它
+
+- **Build 编译 9m05s**：ccache 命中 96.67%，117 个 miss 是真实变更，已近最优
+- **ThinLTO 链接 4m00s**：4 vCPU 上只能靠换 runner 规格，是成本权衡
+- **跳过模块构建**（`make Image.gz` 跳过 modpost）：可再省 30-60s，但会丢掉
+  摘要里 `Modules built: 97` 这个配置健康信号
+
+---
+
+## 17. 配置审计：我们相对纯基线改了什么
 
 用 `diffconfig` 对比「`gki_defconfig` 单独生成的 `.config`」与「我们完整流水线
 生成的 `.config`」。下面是**裁剪删除之后重新实测**的结果，共 **52 行差异**，
