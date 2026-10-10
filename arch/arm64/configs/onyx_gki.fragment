@@ -58,6 +58,36 @@ CONFIG_HZ_300=y
 # what it says.
 CONFIG_ZRAM_DEF_COMP_LZ4=y
 
+# --- BBRv3 congestion control (default) -------------------------------------
+# Requires .github/actions/bbrv3_backport.patch, a backport of BBRv3 from
+# carderlore's implementation to android15-6.6, taken from
+# WildKernels/kernel_patches. The patch adds the algorithm AND makes it the
+# default, which is the point: without DEFAULT_TCP_CONG the stock BBRv1 stays
+# in charge and the backport would be dead code.
+#
+# Two of these are NOT set by the patch's own Kconfig fragment and must be
+# requested here, which is why they appear in the "Key configs" dump:
+#   DEFAULT_BBR3        -> bool "BBR3" if TCP_CONG_BBR3=y
+#   DEFAULT_TCP_CONG    -> default "bbr3" if DEFAULT_BBR3
+#
+# kABI: struct tcp_sock is in the frozen list, and this patch does add three
+# bitfields to it. That is safe because the additions sit inside
+# "#ifndef __GENKSYMS__": the genksyms branch still reads `unused:5`, byte for
+# byte what it read before, so every CRC is unchanged and stock vendor modules
+# keep loading. genksyms consumes preprocessed text only (scripts/
+# Makefile.build:130), never the compiler, which is why the guard works at all.
+#
+# The one UAPI change is in include/uapi/linux/rtnetlink.h: RTAX_FEATURE_MASK
+# gains two previously-unused bits (TCP_USEC_TS = 1<<4, ECN_LOW = 1<<5).
+# Existing bit values are untouched, so old userspace masks stay valid.
+#
+# Verified on this tree: patch applies with 0 failures, 11 hunks at offset and
+# 2 at fuzz 1, all 15 hunks checked by hand, net/ipv4/ compiles clean with the
+# new tcp_bbr3.o at 337K. See README section 18.
+CONFIG_TCP_CONG_BBR3=y
+CONFIG_DEFAULT_BBR3=y
+CONFIG_DEFAULT_TCP_CONG="bbr3"
+
 # --- Droidspaces (POSIX IPC for the container runtime) ---------------------
 # SOURCE: ravindu644/Droidspaces-OSS Documentation/Kernel-Configuration.md,
 # the "配置 GKI 内核" block, at commit 92cee27 (2026-10-05). That block is the

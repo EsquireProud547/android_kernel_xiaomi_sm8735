@@ -437,6 +437,30 @@ jobs:
           patch -p1 --forward < .github/actions/droidspaces_sysvipc.patch
           echo "DROIDSPACES_STATUS=applied" >> $GITHUB_ENV
 
+      - name: Apply BBRv3 backport
+        run: |
+          # BBRv3 congestion control, backported from carderlore's tree to
+          # android15-6.6. From WildKernels/kernel_patches, with one change,
+          # described below.
+          #
+          # This patch does grow struct tcp_sock, which IS in the frozen kABI
+          # list. It is safe anyway: the three added bitfields sit inside
+          # "#ifndef __GENKSYMS__", so the genksyms branch still reads
+          # `unused:5` exactly as before and no CRC moves. genksyms consumes
+          # preprocessed text and never invokes the compiler, which is what
+          # makes that guard sufficient.
+          #
+          # The one change made here: upstream's android15-6.6 revision has a
+          # typo, "-/* Caller made space either from:" -> "+:/* Caller made
+          # space either from:->", which lands a stray "->" in a comment in
+          # net/ipv4/tcp_input.c. The other four revisions in that directory
+          # (5.10, 5.15, 6.1, 6.12) do not have it, so it is an isolated slip
+          # in this one file, not an intended annotation. Corrected in the copy
+          # we ship; the hunk then becomes a no-op that patch accepts.
+          echo "Applying BBRv3 backport..."
+          patch -p1 --forward < .github/actions/bbrv3_backport.patch
+          echo "BBR3_STATUS=applied" >> $GITHUB_ENV
+
       - name: Configure kernel (official Kleaf-style synthesis)
         # The logic lives in .github/actions/configure-kernel.sh, not here.
         # GitHub expands a whole `run:` block as one expression and caps it at
@@ -591,6 +615,7 @@ jobs:
           | **HZ** | 300 |
           | **LTO** | ${{ env.LTO_STATUS }} |
           | **ZRAM** | lz4 |
+          | **Congestion control** | BBRv3 (default) |
           | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **ReSukiSU** | ${{ env.KSU_STATUS }} |
