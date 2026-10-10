@@ -132,6 +132,25 @@ CONFIG_NETFILTER_XT_SET=y
 # with CONFIG_TMPFS_POSIX_ACL above. Depends on TMPFS, =y in the base.
 CONFIG_TMPFS_XATTR=y
 
+# --- Droidspaces: macvlan container networking -----------------------------
+# NOT in upstream's documented GKI block. It came from the requirements checker
+# itself: Droidspaces v6.6.0 reports "Macvlan support CONFIG_MACVLAN; required
+# for --net=macvlan" and it was the only remaining miss that was not a
+# deliberate kABI trade-off.
+#
+# Why it is safe: MACVLAN (drivers/net/Kconfig:166) is a standalone driver with
+# no `depends on`, and "MACVLAN" does not appear in android/abi_gki_aarch64.stg,
+# so it cannot move any kABI-frozen offset. Verified by building the config both
+# ways: the entire diff is these two lines.
+#
+#     MACVLAN n -> y
+#     +MACVTAP n        (a sub-option, default off)
+#
+# Note that stock onyx does NOT enable this either, so this is the one place
+# where we deliberately carry a driver the vendor image lacks. It costs one
+# small driver and buys `--net=macvlan`.
+CONFIG_MACVLAN=y
+
 # --- Deliberately NOT enabled: CONFIG_CFS_BANDWIDTH and CONFIG_CGROUP_PIDS --
 # These power `--cpus` and `--pids-limit`. Droidspaces' own guide keeps them
 # commented out of the GKI block and explains why: they resize the scheduler
@@ -145,6 +164,17 @@ CONFIG_TMPFS_XATTR=y
 # turned on if EVERY module is rebuilt from this same tree and vendor_boot,
 # vendor_dlkm and system_dlkm are flashed together with the new boot.img.
 # Left off. CONFIG_MEMCG is already =y in the GKI base, so --memory works.
+#
+# CONFIRMED ON DEVICE. Droidspaces v6.6.0's requirements checker on the running
+# 6.6.142 build reports exactly:
+#
+#     [x] Memory limit support                        CONFIG_MEMCG
+#     [ ] CPU limit support      CONFIG_CFS_BANDWIDTH, --cpus is skipped
+#     [ ] Process limit support  CONFIG_CGROUP_PIDS,  --pids-limit is skipped
+#
+# which is the expected outcome, and the app handles it: a missing limit is
+# skipped with a warning rather than treated as an error. "All required
+# features found!" So these two stay off deliberately.
 
 # NOTE: upstream's GKI block also lists CONFIG_NETFILTER_XT_TARGET_REJECT. That
 # symbol no longer exists in 6.6; the REJECT target moved to
