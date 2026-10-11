@@ -413,7 +413,10 @@ jobs:
             # A ref that resolves is not proof it builds. Checking the one
             # file upstream uses to halt the build turns a 20-minute failure
             # with no obvious cause into one clear line here.
-            if grep -q 'error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
+            # Match the make function itself, not the word. A plain
+            # grep for 'error' would also fire on a comment mentioning
+            # error handling, which would block a perfectly good build.
+            if grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
               echo "::error::BakaSU $KSU_SHA suspends the SUSFS build via susfs_compat.mk. Pin ksu_ref to a commit before 48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73."
               echo "KSU_STATUS=BROKEN ($KSU_SHA, susfs build suspended upstream)" >> $GITHUB_ENV
               exit 1
