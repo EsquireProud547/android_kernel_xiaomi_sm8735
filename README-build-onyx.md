@@ -379,7 +379,7 @@ PFRA 换页时会被查询——它改变的是运行时决策，不是诊断输
 | `CONFIG_DEBUG_INFO_BTF_MODULES` | y | | `CONFIG_PAHOLE_VERSION` | 131 |
 | `CONFIG_MODULE_SIG_HASH` | `"sha256"` | | `CONFIG_MODULE_SIG_PROTECT` | y |
 
-ReSukiSU `applied (main)`、SUSFS `applied (CONFIG_KSU_SUSFS=y)`、
+BakaSU `applied (main)`、SUSFS `applied (CONFIG_KSU_SUSFS=y)`、
 Droidspaces `applied`、AutoFDO `enabled (in-tree profile, 4.0M)`。
 
 本地用 clang 23 预测的三项全部命中：BTF 保住、AutoFDO 保住、
@@ -623,7 +623,7 @@ Invalid workflow file: .github/workflows/build-onyx.yml#L1
 # 1. 复现 CI 的补丁序列
 patch -p1 < .github/actions/libbpf_strchr_const.patch
 patch -p1 < .github/actions/droidspaces_sysvipc.patch
-# 2. ReSukiSU：克隆 Baka-SU/BakaSU，软链到 drivers/kernelsu，接进 Makefile/Kconfig
+# 2. BakaSU：克隆 Baka-SU/BakaSU，软链到 drivers/kernelsu，接进 Makefile/Kconfig
 git clone --depth 1 https://github.com/Baka-SU/BakaSU.git KernelSU
 ln -sfn ../KernelSU/kernel drivers/kernelsu
 # 3. SUSFS
@@ -686,7 +686,7 @@ make[1]: *** [Makefile:252：__sub-make] 错误 2
 实际链路是：
 
 ```
-ReSukiSU setup.sh → clone Baka-SU/BakaSU → kernel/ 软链到 drivers/kernelsu
+BakaSU setup.sh → clone Baka-SU/BakaSU → kernel/ 软链到 drivers/kernelsu
   └─ Baka-SU/BakaSU 本身就是带 SUSFS 的 KernelSU fork
      它的 kernel/Kconfig 已经包含 config KSU_SUSFS + 9 个子选项（实测 10 处定义）
 susfs4ksu 50_add_susfs → 只提供内核侧那一半
@@ -828,7 +828,7 @@ Build 内部：并行编译 9m05s（ccache 命中 96.67%）→ ThinLTO 链接 4m
 `fetch-depth: 0` → `1`。本仓库 126 万提交，完整 fetch 5m22s，占整体 23%，
 而流水线里**没有任何地方消费 git 历史**：
 
-- ReSukiSU `setup.sh` 的 `git checkout` / `git stash` 作用于**它自己 clone 的
+- BakaSU `setup.sh` 的 `git checkout` / `git stash` 作用于**它自己 clone 的
   KernelSU 仓库**，不是内核树
 - susfs4ksu 在 SUSFS 步骤单独 clone
 - 版本串来自 `scripts/setlocalversion`，只需要 `git rev-parse HEAD`，以及
@@ -876,7 +876,79 @@ ext4 上 fallocate 出来的文件 `swapon` 直接报 `Invalid argument`。
 
 ---
 
-## 17. 配置审计：我们相对纯基线改了什么
+## 17. BBRv3 与 NTSync（2026-10-12 加入）
+
+两个都来自 [WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patches)，
+都是 6.6.142 上原本缺失、靠回移补上的特性。
+
+### BBRv3（拥塞控制，默认启用）
+
+`.github/actions/bbrv3_backport.patch` = 上游 `android15-6.6` 那份回移，
+**并设为默认**——不回移的话 stock BBRv1 仍然当值，这一整套就是死代码。
+
+应用情况：15 个 hunk，**0 失败**，11 个 offset、2 个 fuzz 1，逐个人工核对过。
+
+**kABI 需要证明而非假设。** 补丁给 `struct tcp_sock` 加了 3 个 bitfield，
+而该结构体在冻结列表里。安全的原因是它们被包在 `#ifndef __GENKSYMS__` 内：
+
+```c
+#ifndef __GENKSYMS__
+        fast_ack_mode:2,
+        tlp_orig_data_app_limited:1,
+        unused:2;
+#else
+        unused:5;        ← genksyms 只看这一支
+#endif
+```
+
+genksyms 分支展开后与打补丁前**逐字节相同** → CRC 不变 → 原厂模块照常加载。
+这依赖"genksyms 只消费预处理文本、从不调用编译器"（`scripts/Makefile.build:130`），
+和 Droidspaces sysvipc 补丁是同一套机制。
+
+唯一的 UAPI 改动：`rtnetlink.h` 的 `RTAX_FEATURE_MASK` 增加了两个**原本未使用**的位
+（`TCP_USEC_TS` = 1<<4、`ECN_LOW` = 1<<5），已有位不变，旧 userspace 掩码仍有效。
+
+**修正了上游一处笔误**：`android15-6.6` 那版有个 `-: ->` 把 `->` 写进了注释。
+另外四版（5.10/5.15/6.1/6.12）都没有这个写法，全仓库也只出现这一次，
+判定为孤立笔误而非有意标注。修正后该 hunk 变成空操作，`patch` 接受，
+其余部分与上游逐字节相同。
+
+验证：`net/ipv4/` 编译零错误，`tcp_bbr3.o` 337K，bbr3 全部函数符号就位。
+
+### NTSync（Windows NT 同步原语模拟）
+
+Wine 和 Windows 游戏需要它。**必须两个补丁、按顺序**：
+
+| 补丁 | 作用 |
+|---|---|
+| `ntsync_base.patch` | 驱动本体 + UAPI 头（`drivers/misc/ntsync.c`、`include/uapi/linux/ntsync.h`） |
+| `ntsync_compat_android15-6.6.patch` | Kconfig 条目 + Makefile 行 |
+
+单独用任何一个都不行：base 只是加源码不编译，compat 引用一个不存在的 object。
+
+**kABI 零风险**：只新增两个文件 + 在 `drivers/misc/{Kconfig,Makefile}` 各追加一行，
+**不修改任何现有结构体**，冻结列表里的东西不可能移动。
+
+设 `=y` 而非 Kconfig 默认的 `m`，这样不需要加载模块、不用附带 .ko 就能用。
+
+验证：两个补丁 0 失败（仅 1 个 hunk offset 1），`drivers/misc/` 编译零错误，
+`ntsync.o` 177K，5 个 ioctl 接口齐全。
+
+### 都没有实机验证
+
+BBRv3 和 NTSync 都是**编译通过**，没上设备。刷入后建议确认：
+
+```bash
+adb shell cat /proc/sys/net/ipv4/tcp_congestion_control       # bbr3
+adb shell sysctl net.ipv4.tcp_available_congestion_control   # 含 bbr3
+adb shell ls /dev/ntsync*                                    # NTSync
+```
+
+链路质量若反而变差，回退只需注释 fragment 里对应的行，补丁可以留着不启用。
+
+---
+
+## 18. 配置审计：我们相对纯基线改了什么
 
 用 `diffconfig` 对比「`gki_defconfig` 单独生成的 `.config`」与「我们完整流水线
 生成的 `.config`」。下面是**裁剪删除之后重新实测**的结果，共 **52 行差异**，

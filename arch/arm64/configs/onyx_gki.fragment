@@ -83,10 +83,28 @@ CONFIG_ZRAM_DEF_COMP_LZ4=y
 #
 # Verified on this tree: patch applies with 0 failures, 11 hunks at offset and
 # 2 at fuzz 1, all 15 hunks checked by hand, net/ipv4/ compiles clean with the
-# new tcp_bbr3.o at 337K. See README section 18.
+# new tcp_bbr3.o at 337K. See README section 17.
 CONFIG_TCP_CONG_BBR3=y
 CONFIG_DEFAULT_BBR3=y
 CONFIG_DEFAULT_TCP_CONG="bbr3"
+
+# --- NTSync (Windows NT synchronization primitive emulation) ---------------
+# Requires .github/actions/ntsync_base.patch and
+# .github/actions/ntsync_compat_android15-6.6.patch, applied in that order.
+#
+# ntsync_base.patch adds drivers/misc/ntsync.c and include/uapi/linux/ntsync.h;
+# the compat patch adds the Kconfig entry and the Makefile line that make them
+# build. Neither is useful alone: base on its own compiles nothing, compat on
+# its own references an object that does not exist.
+#
+# =y rather than the Kconfig's `default m`, so the primitive is available
+# without a module load and without shipping a .ko. Nothing existing is
+# modified -- two new files plus two appended lines in drivers/misc -- so no
+# frozen kABI struct can move.
+#
+# Verified on this tree: both patches apply with zero failures (one hunk at
+# offset 1), and drivers/misc/ compiles clean with ntsync.o at 177K.
+CONFIG_NTSYNC=y
 
 # --- Droidspaces (POSIX IPC for the container runtime) ---------------------
 # SOURCE: ravindu644/Droidspaces-OSS Documentation/Kernel-Configuration.md,

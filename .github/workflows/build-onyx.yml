@@ -9,7 +9,7 @@ name: Build Onyx Kernel
 #
 # Carried over from gki-clo's build-capybara.yml and from the 6.6.82 pipeline:
 # runner/swap/cleanup, dependency list, Clang fetch+cache, three-tier ccache
-# keys, ReSukiSU, SUSFS + fixup, Droidspaces kABI patch, the build command,
+# keys, BakaSU, SUSFS + fixup, Droidspaces kABI patch, the build command,
 # AnyKernel3 packaging and artifact upload. Also unchanged: config synthesis
 # follows the STOCK Kleaf mixed-build (build.config.msm.perf +
 # build.config.msm.common) rather than a hand-baked defconfig, with the same
@@ -98,7 +98,7 @@ on:
         type: boolean
         default: true
       ksu_branch:
-        description: "ReSukiSU branch (leave empty = main)"
+        description: "BakaSU branch (leave empty = main)"
         type: string
         default: "main"
       version:
@@ -134,7 +134,7 @@ permissions:
   # This is a pure build: checkout, cache, ccache, compile, upload an artifact.
   # Nothing here writes to the repository, and all four actions work with read
   # only access. The build pipes a third-party script straight into bash
-  # (`curl ... ReSukiSU/main/kernel/setup.sh | bash -s`) and clones a moving
+  # (`curl ... Baka-SU/BakaSU/main/kernel/setup.sh | bash -s`) and clones a moving
   # branch (susfs4ksu gki-android15-6.6). A poisoned dependency should not be
   # able to push to this repo.
   contents: read
@@ -162,7 +162,7 @@ jobs:
           # full fetch measured 5m22s, roughly 23% of the whole run.
           #
           # Nothing here consumes the history:
-          #   - ReSukiSU's setup.sh runs git checkout/stash against the
+          #   - BakaSU's setup.sh runs git checkout/stash against the
           #     KernelSU repository IT clones, not against this tree.
           #   - susfs4ksu is cloned separately by the SUSFS step.
           #   - the version string comes from scripts/setlocalversion, which
@@ -373,16 +373,27 @@ jobs:
             onyx-614-clang-${{ env.CLANG_VERSION }}-
           max-size: 3G
 
-      - name: Apply ReSukiSU
+      - name: Apply BakaSU
         run: |
+          # ReSukiSU was renamed upstream to Baka-SU/BakaSU. Both repos' setup
+          # scripts were byte-identical at the time of the rename (121 lines,
+          # cloning the same BakaSU repository and applying the same Makefile
+          # and Kconfig edits), so switching the URL changes nothing else in
+          # this pipeline. The only thing inside the script that touches this
+          # tree is the symlink and the two appended lines, which are keyed on
+          # CONFIG_KSU and are idempotent.
+          #
+          # Note that the script's own git checkout and git stash run against
+          # the KernelSU repository it clones, not against the kernel tree, so
+          # the shallow checkout above does not affect it.
           KSU_BRANCH="${{ inputs.ksu_branch != '' && inputs.ksu_branch || 'main' }}"
-          echo "Applying ReSukiSU (branch: $KSU_BRANCH)..."
-          if curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
+          echo "Applying BakaSU (branch: $KSU_BRANCH)..."
+          if curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" \
                | bash -s -- "$KSU_BRANCH"; then
             echo "KSU_STATUS=applied ($KSU_BRANCH)" >> $GITHUB_ENV
           else
             echo "KSU_STATUS=FAILED ($KSU_BRANCH)" >> $GITHUB_ENV
-            echo "::warning::ReSukiSU integration failed, continuing without it"
+            echo "::warning::BakaSU integration failed, continuing without it"
           fi
 
       - name: Apply SUSFS patches
@@ -460,6 +471,34 @@ jobs:
           echo "Applying BBRv3 backport..."
           patch -p1 --forward < .github/actions/bbrv3_backport.patch
           echo "BBR3_STATUS=applied" >> $GITHUB_ENV
+
+      - name: Apply NTSync
+        run: |
+          # NTSync: emulation of the Windows NT synchronization primitives, so
+          # Wine and Windows games can run on it. Two patches from
+          # WildKernels/kernel_patches, both required and both needed in this
+          # order:
+          #
+          #   ntsync_base.patch                  the driver and its UAPI header
+          #   ntsync_compat_android15-6.6.patch  the Kconfig and Makefile entries
+          #
+          # base alone builds nothing, it only adds sources; compat alone
+          # references an object that does not exist.
+          #
+          # kABI: nothing existing is modified. base adds two new files
+          # (drivers/misc/ntsync.c, include/uapi/linux/ntsync.h) and compat
+          # adds two lines to drivers/misc/{Kconfig,Makefile}. No struct in the
+          # frozen list moves, so this is safe by construction rather than by
+          # argument.
+          #
+          # Verified on this tree: both apply with zero failures, the only
+          # deviation being one hunk at offset 1, and drivers/misc/ compiles
+          # clean with ntsync.o at 177K.
+          echo "Applying NTSync (base)..."
+          patch -p1 --forward < .github/actions/ntsync_base.patch
+          echo "Applying NTSync (6.6 compat)..."
+          patch -p1 --forward < .github/actions/ntsync_compat_android15-6.6.patch
+          echo "NTSYNC_STATUS=applied" >> $GITHUB_ENV
 
       - name: Configure kernel (official Kleaf-style synthesis)
         # The logic lives in .github/actions/configure-kernel.sh, not here.
@@ -616,9 +655,10 @@ jobs:
           | **LTO** | ${{ env.LTO_STATUS }} |
           | **ZRAM** | lz4 |
           | **Congestion control** | BBRv3 (default) |
+          | **NTSync** | ${{ env.NTSYNC_STATUS || 'disabled' }} |
           | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
-          | **ReSukiSU** | ${{ env.KSU_STATUS }} |
+          | **BakaSU** | ${{ env.KSU_STATUS }} |
           | **SUSFS** | ${{ env.SUSFS_STATUS || 'disabled' }} |
           | **Droidspaces** | ${{ env.DROIDSPACES_STATUS }} |
           | **BTF** | ${{ env.BTF_STATUS }} |

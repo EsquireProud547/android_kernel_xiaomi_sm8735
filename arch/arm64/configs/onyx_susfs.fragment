@@ -1,5 +1,5 @@
 #
-# onyx_susfs.fragment - ReSukiSU + SUSFS, applied only when enable_susfs=true
+# onyx_susfs.fragment - BakaSU + SUSFS, applied only when enable_susfs=true
 #
 # WHERE THESE SYMBOLS COME FROM -- corrected after reading the sources.
 #
@@ -10,7 +10,7 @@
 #
 # The actual chain is:
 #
-#   ReSukiSU's kernel/setup.sh clones github.com/Baka-SU/BakaSU, symlinks its
+#   BakaSU's kernel/setup.sh clones github.com/Baka-SU/BakaSU, symlinks its
 #   kernel/ directory to drivers/kernelsu, and wires it into drivers/Makefile
 #   and drivers/Kconfig. Baka-SU/BakaSU is itself a SUSFS-enabled KernelSU
 #   fork: its kernel/Kconfig already contains `config KSU_SUSFS` plus all nine
