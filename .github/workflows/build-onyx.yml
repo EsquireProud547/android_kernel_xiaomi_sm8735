@@ -88,7 +88,16 @@ env:
   # stop applying to 6.6.142 -- so the outcome is recorded in SUSFS_STATUS and
   # gate 3 turns a lost CONFIG_KSU_SUSFS into a hard build failure. Loud, not
   # silent, which is what matters.
+  #
+  # The susfs_dev input switches to gki-android15-6.6-dev. That branch has
+  # DIVERGED from this one rather than moved ahead of it: both contain the
+  # same functional work under different SHAs, dev having additionally synced
+  # with upstream KernelSU main as of 2026-10-12. Both carry the same patch
+  # file name and both apply to 6.6.142 with 19 hunks, 1 at fuzz 1 and no
+  # failures, so the switch is one variable. Neither reports a different
+  # SUSFS_VERSION; both say v2.3.0. See the SUSFS step for the details.
   SUSFS_BRANCH: gki-android15-6.6
+  SUSFS_BRANCH_DEV: gki-android15-6.6-dev
 
 on:
   workflow_dispatch:
@@ -97,6 +106,10 @@ on:
         description: "Enable SUSFS (hide root traces)"
         type: boolean
         default: true
+      susfs_dev:
+        description: "Use susfs4ksu's gki-android15-6.6-dev branch instead of the stable one (fresher, less tested)"
+        type: boolean
+        default: false
       ksu_ref:
         description: "BakaSU ref: branch, tag, or commit SHA. Pinned to a commit before 48fa4bb7 because upstream suspended the SUSFS build there"
         type: string
@@ -431,18 +444,41 @@ jobs:
         if: inputs.enable_susfs
         run: |
           echo "Applying SUSFS patches..."
-          # Always the branch head -- no pin. susfs4ksu has no android17-6.6
-          # branch, so gki-android15-6.6 is the only 6.6 one, and it does apply
-          # to this tree (measured at the time of writing: 19 hunks, 0 failures,
-          # one hunk at fuzz 1). Upstream fixes should arrive without editing
-          # this file, so tracking the head is the intended behaviour.
+          # Always the branch head -- no pin. Upstream fixes should arrive
+          # without editing this file, so tracking the head is the intended
+          # behaviour.
+          #
+          # susfs_dev picks between two branches. They have DIVERGED, not
+          # simply moved apart: both contain the same SUS_KSTAT work under
+          # different SHAs, and dev has additionally synced against upstream
+          # KernelSU main (last such sync 2026-10-12). They are not in
+          # fast-forward relation, so this is a choice, not a "newer" toggle.
+          #
+          # Measured on this tree, both apply identically:
+          #
+          #     stable  19 hunks, 1 at fuzz 1, 0 failures, max offset -24
+          #     dev     19 hunks, 1 at fuzz 1, 0 failures, max offset -24
+          #
+          # Both carry the same patch file name, and both report
+          # SUSFS_VERSION "v2.3.0", so the App shows the same version either
+          # way and only the branch name in SUSFS_STATUS tells them apart.
+          #
+          # dev is the less-tested of the two. That is the whole trade: fresher
+          # KernelSU sync versus a branch that has been settling longer.
           #
           # If a future upstream commit stops applying, that is visible rather
           # than silent: SUSFS_STATUS is recorded, and gate 3 below fails the
           # build because CONFIG_KSU_SUSFS would be missing from out/.config.
+          if [ "${{ inputs.susfs_dev }}" = "true" ]; then
+            SUSFS_BRANCH="${{ env.SUSFS_BRANCH_DEV }}"
+            echo "  using the -dev branch (fresher, less tested)"
+          else
+            SUSFS_BRANCH="${{ env.SUSFS_BRANCH }}"
+            echo "  using the stable branch"
+          fi
           if git clone -q https://gitlab.com/simonpunk/susfs4ksu.git \
-               -b "${{ env.SUSFS_BRANCH }}" --depth 1 susfs4ksu; then
-            echo "  susfs4ksu ${{ env.SUSFS_BRANCH }} @ $(git -C susfs4ksu rev-parse HEAD)"
+               -b "$SUSFS_BRANCH" --depth 1 susfs4ksu; then
+            echo "  susfs4ksu $SUSFS_BRANCH @ $(git -C susfs4ksu rev-parse HEAD)"
             # This tree already has <linux/dma-buf.h> in fs/proc/base.c:103, so
             # the CLO fixup is a no-op here. It is kept because it is
             # idempotent and self-checking, and because the SUSFS hunk that
@@ -454,14 +490,14 @@ jobs:
               # patch alone only adds glue/context.
               cp -v susfs4ksu/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
               cp -v susfs4ksu/kernel_patches/fs/* fs/ 2>/dev/null || true
-              echo "SUSFS_STATUS=applied ($(git -C susfs4ksu rev-parse --short HEAD))" >> $GITHUB_ENV
+              echo "SUSFS_STATUS=applied ($SUSFS_BRANCH @ $(git -C susfs4ksu rev-parse --short HEAD))" >> $GITHUB_ENV
             else
-              echo "SUSFS_STATUS=patch-failed" >> $GITHUB_ENV
-              echo "::warning::SUSFS patch did not apply to 6.6.142; gate 3 will fail the build"
+              echo "SUSFS_STATUS=patch-failed ($SUSFS_BRANCH)" >> $GITHUB_ENV
+              echo "::warning::SUSFS patch from $SUSFS_BRANCH did not apply to 6.6.142; gate 3 will fail the build"
             fi
           else
-            echo "SUSFS_STATUS=clone-failed" >> $GITHUB_ENV
-            echo "::warning::could not clone susfs4ksu; gate 3 will fail the build"
+            echo "SUSFS_STATUS=clone-failed ($SUSFS_BRANCH)" >> $GITHUB_ENV
+            echo "::warning::could not clone susfs4ksu $SUSFS_BRANCH; gate 3 will fail the build"
           fi
 
       - name: Apply Droidspaces kABI patch
