@@ -1208,3 +1208,16 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 
 ---
 
+## 22. 构建选项精简：AutoFDO 与 ThinLTO 固化默认开启
+
+在 Xiaomi 15（SM8735 onyx）上，经过前期实机测试与 bisect 验证：
+- **ThinLTO**：已充分验证能在该机型上正常引导开机，且减小内核镜像体积、优化跨函数调用内联；
+- **AutoFDO**：树内自带采自 Android 15 / 6.6.129 权威运行采样的 `android/gki/aarch64/afdo/kernel.afdo`，代码布局优化明显；
+
+为了避免每次在 GitHub Actions 的 `workflow_dispatch` 界面手动勾选多个容易眼花缭乱的选项：
+- 从工作流 inputs 中精简掉 `enable_autofdo` 和 `enable_thinlto` 开关；
+- 在流水线环境变量中直接固化为 `ENABLE_AUTOFDO="true"` 与 `ENABLE_THINLTO="true"`；
+- 后续触发构建无需再手动配置，全自动享受最高性能的代码生成优化。
+
+---
+

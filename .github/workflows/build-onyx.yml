@@ -122,14 +122,6 @@ on:
         description: "Merge the built-in (=y) entries of vendor/onyx_perf.config"
         type: boolean
         default: true
-      enable_autofdo:
-        description: "Use the in-tree GKI AutoFDO profile (non-fatal if unavailable)"
-        type: boolean
-        default: true
-      enable_thinlto:
-        description: "ThinLTO. Verified booting on this device; OFF reproduces the stock kernel exactly (LTO_NONE)"
-        type: boolean
-        default: true
       enable_btf:
         description: "BTF for eBPF/CO-RE (needs pahole >= 1.21; auto-disabled if missing)"
         type: boolean
@@ -604,8 +596,8 @@ jobs:
         env:
           ENABLE_SUSFS: ${{ inputs.enable_susfs }}
           ENABLE_VENDOR_MODULES: ${{ inputs.enable_vendor_modules }}
-          ENABLE_AUTOFDO: ${{ inputs.enable_autofdo }}
-          ENABLE_THINLTO: ${{ inputs.enable_thinlto }}
+          ENABLE_AUTOFDO: "true"
+          ENABLE_THINLTO: "true"
           ENABLE_BTF: ${{ inputs.enable_btf }}
         run: .github/actions/configure-kernel.sh
       - name: Build kernel
@@ -752,7 +744,7 @@ jobs:
           | **NTSync** | ${{ env.NTSYNC_STATUS || 'disabled' }} |
           | **Baseband-guard** | ${{ env.BBG_STATUS || 'disabled' }} |
           | **RCU Lazy** | ${{ env.RCU_LAZY_STATUS || 'disabled' }} |
-          | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
+          | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: on |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **BakaSU** | ${{ env.KSU_STATUS }} |
           | **SUSFS** | ${{ env.SUSFS_STATUS || 'disabled' }} |
