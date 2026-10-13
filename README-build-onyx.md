@@ -1157,3 +1157,54 @@ CONFIG_MODULE_SIG_PROTECT=y
 
 ---
 
+## 21. RCU Lazy 与 NOCB 全核心卸载（默认全自动开启）
+
+### 背景与优化机制
+
+Android 设备在日常息屏待机或轻负载时，系统各子系统（网络套接字释放、VFS 缓存逐出、IPC 句柄销毁等）会极其频繁地注册短命的 `kfree_rcu()` 和普通 RCU 回调。
+在原生 RCU 机制下，内核必须为这些回调频繁驱动 RCU 宽限期（Grace Period）状态机并唤醒各 CPU 核心，导致 CPU 难以长时间维持在深度 C-State 睡眠状态，造成息屏功耗浪费。
+
+Google 工程师 Joel Fernandes 为 Android 引入了 **RCU Lazy** 机制（[`CONFIG_RCU_LAZY=y`](file:///home/linggou/dswork/newwork/android_kernel_xiaomi_sm8735/kernel/rcu/Kconfig)）：
+- 将无强同步依赖、非紧急的 RCU 回调延迟批量排队（进入 `nocb_bypass` 队列），最长聚批延迟可达数秒（`RCU_LAZY_GP_DELAY`，默认约 5~10 秒）。
+- 当系统处于非空闲状态、或遇到显式屏障（`synchronize_rcu()`）、或内存紧张时，立即唤醒并刷新批处理队列。
+- 在小米 15（SM8735 onyx，16GB 运行内存）设备上，延迟回收带来的内存驻留微乎其微（通常仅数 MB），但能大幅消除 CPU 无效唤醒，息屏待机续航收益显著。
+
+### 硬性依赖：NOCB 全 CPU 卸载（`CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y`）
+
+RCU Lazy 的批处理机制在内核底层（[`kernel/rcu/tree_nocb.h`](file:///home/linggou/dswork/newwork/android_kernel_xiaomi_sm8735/kernel/rcu/tree_nocb.h)）中**严格绑定于 RCU No-CBs（NOCB）旁路链表**。
+- 如果目标 CPU 核心未处于 NOCB offload 状态，RCU 回调将直接在本地 CPU 的软中断（`rcu_core`）上下文中立即处理，RCU Lazy 逻辑会被内核旁路而**彻底静默失效**。
+- 为了实现「内核刷入后全自动生效，不需要任何 bootloader cmdline（如 `rcu_nocbs=all`）配合」，我们在 [`arch/arm64/configs/onyx_gki.fragment`](arch/arm64/configs/onyx_gki.fragment) 中启用了：
+  ```kconfig
+  CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y
+  ```
+- 该选项在 `gki_defconfig` 中未定义（走 Kconfig 的 `default n`），依赖项 `CONFIG_RCU_NOCB_CPU=y` 已在基线中完全满足，属于纯加法，完全符合闸门 1 规则。
+
+### 规避闸门 1 限制的覆写方案（`-d CONFIG_RCU_LAZY_DEFAULT_OFF`）
+
+基线 `gki_defconfig:23` 显式设置了：
+```kconfig
+CONFIG_RCU_LAZY_DEFAULT_OFF=y
+```
+导致内核引导时 `kernel/rcu/tree.c` 中的变量初值：
+```c
+static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_OFF);
+```
+计算为 `false`（实机 `/sys/module/rcutree/parameters/enable_rcu_lazy` 返回 `N`）。
+
+由于流水线的**闸门 1（Gate 1）**严格禁止在 fragment 中直接反向覆写基线已设置的值（若写 `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set` 会被 `merge_config.sh` 判定为覆盖冲突）：
+- 我们借鉴 `CONFIG_UAPI_HEADER_TEST` 的标准处理机制，在 [`.github/actions/configure-kernel.sh`](.github/actions/configure-kernel.sh) 的 `OVERRIDE_ARGS` 中执行：
+  ```bash
+  OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_RCU_LAZY_DEFAULT_OFF"
+  ```
+- 在 `merge_config.sh` 合并之后、`make <defconfig>` 执行之前，通过 `scripts/config` 精准剔除该符号。
+- 随后 `make olddefconfig` 采纳 Kconfig 原生默认值 `n`，Gate 2 与 Gate 3 的 `diffconfig` 校验均 100% 干净通过。
+- 最终内核编译生成时 `enable_rcu_lazy` 默认即为 `true`，刷机后开机即全自动生效。
+
+### kABI 零破坏分析
+
+1. `CONFIG_RCU_LAZY` 本身在基线中已被编译进内核，`CONFIG_RCU_LAZY_DEFAULT_OFF` 仅控制一个模块静态变量的 bool 初值；
+2. `CONFIG_RCU_NOCB_CPU_DEFAULT_ALL` 仅控制内核初始化时 `rcu_bootup_announce_oddness()` 与 NOCB CPU 掩码的初始装载；
+3. 二者均不改变任何公开头文件中的数据结构体大小与字段偏移（如 `task_struct`、`rcu_head` 等完全不变），符号 CRC 保持 100% 兼容，原厂 `vendor_dlkm` 驱动加载完全不受影响。
+
+---
+

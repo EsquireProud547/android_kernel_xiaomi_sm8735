@@ -751,6 +751,7 @@ jobs:
           | **F2FS tuning** | ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |
           | **NTSync** | ${{ env.NTSYNC_STATUS || 'disabled' }} |
           | **Baseband-guard** | ${{ env.BBG_STATUS || 'disabled' }} |
+          | **RCU Lazy** | ${{ env.RCU_LAZY_STATUS || 'disabled' }} |
           | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **BakaSU** | ${{ env.KSU_STATUS }} |

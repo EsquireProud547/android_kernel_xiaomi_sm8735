@@ -249,3 +249,13 @@ CONFIG_MACVLAN=y
 # it could be turned on, but stock onyx does not have it either and upstream
 # deliberately omits it from the kABI-tested set. Not added. Say so here rather
 # than leaving the gap unexplained.
+
+# --- RCU Lazy invocation & NOCB CPU offload --------------------------------
+# Enables full CPU offload for RCU callbacks across all CPUs by default.
+# RCU Lazy batching queue operates strictly on nocb_bypass lists. Without
+# offloading callback processing to kthreads, callbacks run in local softirqs
+# and RCU Lazy remains dormant.
+# Turning on CONFIG_RCU_NOCB_CPU_DEFAULT_ALL satisfies this requirement at boot
+# without requiring any bootloader cmdline modifications (such as rcu_nocbs=all).
+CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y
+

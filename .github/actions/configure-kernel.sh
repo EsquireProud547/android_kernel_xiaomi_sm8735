@@ -234,10 +234,9 @@ echo "  [gate 1/3] no overridden values"
 # base already sets has to happen here -- still BEFORE make, so that
 # gate 3's diffconfig stays a real assertion.
 #
-# There is exactly one, and it is a drop rather than a setting: see
-# the UAPI_HEADER_TEST comment below.
-OVERRIDE_ARGS=""
-
+# Deliberate drops:
+# 1. UAPI_HEADER_TEST (developer only)
+# 2. RCU_LAZY_DEFAULT_OFF (we want enable_rcu_lazy=Y by default)
 OVERRIDE_ARGS=""
 
 if [ "$BTF_OFF" = "1" ]; then
@@ -258,6 +257,13 @@ fi
 # from it in a shipping kernel and it costs build time, so drop the
 # request rather than weakening the gate.
 OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_UAPI_HEADER_TEST"
+
+# RCU Lazy is compiled-in in the GKI base (CONFIG_RCU_LAZY=y), but
+# gki_defconfig line 23 sets CONFIG_RCU_LAZY_DEFAULT_OFF=y, leaving
+# rcutree.enable_rcu_lazy=N unless overridden via cmdline.
+# We drop CONFIG_RCU_LAZY_DEFAULT_OFF here so that enable_rcu_lazy
+# defaults to 'Y' (true) at boot without needing bootloader cmdline changes.
+OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_RCU_LAZY_DEFAULT_OFF"
 
 if [ -n "$OVERRIDE_ARGS" ]; then
   # shellcheck disable=SC2086
@@ -403,11 +409,17 @@ if grep -q "^CONFIG_BBG=y" out/.config; then
   echo "BBG_STATUS=applied (CONFIG_BBG=y)" >> $GITHUB_ENV
 fi
 
+if grep -q "^CONFIG_RCU_LAZY=y" out/.config && ! grep -q "^CONFIG_RCU_LAZY_DEFAULT_OFF=y" out/.config; then
+  NOCB_ALL_VAL=$(grep -q '^CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y' out/.config && echo 'y' || echo 'n')
+  echo "RCU_LAZY_STATUS=enabled (default ON, NOCB_ALL=$NOCB_ALL_VAL)" >> $GITHUB_ENV
+fi
+
 echo "=== Key configs ==="
 for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_HZ CONFIG_LTO_CLANG_THIN \
   CONFIG_CFI_CLANG CONFIG_ZRAM_DEF_COMP CONFIG_OVERLAY_FS CONFIG_SECCOMP \
   CONFIG_TCP_CONG_BBR3 CONFIG_DEFAULT_BBR3 CONFIG_DEFAULT_TCP_CONG CONFIG_NTSYNC \
   CONFIG_BBG CONFIG_LSM \
+  CONFIG_RCU_LAZY CONFIG_RCU_LAZY_DEFAULT_OFF CONFIG_RCU_NOCB_CPU_DEFAULT_ALL \
   CONFIG_NAMESPACES CONFIG_WIREGUARD CONFIG_AUTOFDO_CLANG CONFIG_MODVERSIONS \
   CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_IPC_NS CONFIG_PID_NS \
   CONFIG_DEVTMPFS CONFIG_ANDROID_KABI_RESERVE \
