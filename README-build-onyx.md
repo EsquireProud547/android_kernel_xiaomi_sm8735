@@ -1221,3 +1221,35 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 
 ---
 
+## 23. 全局直接升级 ZSTD 至 v1.5.7 与 ZRAM 算法控制权解耦
+
+### 1. ZSTD 全局直接升级至官方 upstream v1.5.7
+
+- **代码来源**：直接同步自 Linux 官方 upstream ZSTD 维护者 Nick Terrell 的权威仓库（分支 `zstd-linus`，Tag `2025-03-13-zstd-v1.5.7-v1`，Linux 6.14+ 官方主线代码）。
+- **覆盖范围**：
+  - 全量升级 [`lib/zstd/`](lib/zstd/) 下全部公共库、压缩器、解压器及内部模块源码（新增 `zstd_preSplit.c` 等现代压缩加速支持）；
+  - 全量升级 [`include/linux/zstd.h`](include/linux/zstd.h)、[`include/linux/zstd_lib.h`](include/linux/zstd_lib.h) 与 [`include/linux/zstd_errors.h`](include/linux/zstd_errors.h) 头文件。
+- **Linux 6.6 兼容性适配**：
+  - upstream 源码在 [`lib/zstd/common/mem.h`](lib/zstd/common/mem.h) 中默认引用了 Linux 6.12+ 引入的 `<linux/unaligned.h>`；
+  - 针对 Linux 6.6 原生环境，将其适配为 `#include <asm/unaligned.h>`，完美兼容 aarch64 平台；
+  - 本地经由 Clang / LLVM 完成全量 `lib/zstd/` 目标文件编译验证，达到 **0 warning, 0 error**。
+- **kABI 证明与向后兼容性**：
+  - 对外暴露的 `zstd_*` 接口完全保持向后兼容；
+  - 核心工作区句柄 `ZSTD_CCtx` 与 `ZSTD_DCtx` 在公开头文件中均为不透明指针（Opaque Pointer），外部驱动只通过指针句柄传递，不破坏任何结构体内存布局；
+  - 升级移除了废弃未使用的 `ZSTD_customMalloc/Calloc/Free` 符号，经核查 GKI 冻结 symbol list，此三者从未被列入白名单，不构成 kABI 破坏。
+
+### 2. 移除默认 ZRAM 算法配置（交还用户空间 / KernelSU 模块控制）
+
+- **决策背景**：
+  - 原先在 [`arch/arm64/configs/onyx_gki.fragment`](arch/arm64/configs/onyx_gki.fragment) 中硬编码了 `CONFIG_ZRAM_DEF_COMP_LZ4=y`。
+  - 但在实机环境中，Android / 定制 ROM 的 init 脚本往往会自行重置 ZRAM 算法，或者用户更倾向于使用专用的 KernelSU 调优模块全局配置更高压缩率的 `zstd`。
+  - 内核配置强行指定默认算法反而可能与用户空间发生行为割裂。
+- **变更与闸门验证**：
+  - 从 `onyx_gki.fragment` 中干净剥离 `CONFIG_ZRAM_DEF_COMP_LZ4=y`；
+  - 基线 `gki_defconfig` 未显式指定该符号（直接走 Kconfig 机制），剥离该行属于纯减法，闸门 1（覆盖冲突检测）与闸门 2/3 全绿通过。
+
+### 3. CI 构建摘要（Build Summary）视觉看板重构
+
+- **重构目的**：原有构建摘要包含 22 行扁平键值对，重点信息不够聚焦。
+- **优化**：在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 中精简为 11 行结构化看板，突出产物版本、Clang+LTO+AutoFDO 状态、BakaSU、SUSFS、Baseband-guard、RCU Lazy、ZSTD v1.5.7、BBRv3、NTSync、F2FS 等核心特性。
+

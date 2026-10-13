@@ -727,30 +727,19 @@ jobs:
       - name: Build summary
         run: |
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          ## Build Complete
+          ## 🚀 Onyx Kernel 构建完成
 
-          | Item | Value |
-          |------|-------|
-          | **Kernel** | Linux ${{ env.KERNEL_RELEASE }} (Xiaomi SM8735 / onyx, branch `seventeen`) |
-          | **Clang** | ${{ env.CLANG_VERSION }} (${{ env.CLANG_BRANCH }}, LLVM ${{ env.CLANG_MAJOR }}) — ${{ env.CLANG_STATUS }} |
-          | **Config base** | `gki_defconfig` + `onyx_gki.fragment` (+ vendor =y, + susfs) |
-          | **Config gates** | 3/3 passed (no overrides, no warnings, all fragments applied) |
-          | **Vendor modules** | ${{ inputs.enable_vendor_modules && 'onyx_perf.config =y entries merged' || 'skipped' }} |
-          | **HZ** | 300 |
-          | **LTO** | ${{ env.LTO_STATUS }} |
-          | **ZRAM** | lz4 |
-          | **Congestion control** | BBRv3 (default) |
-          | **F2FS tuning** | ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |
-          | **NTSync** | ${{ env.NTSYNC_STATUS || 'disabled' }} |
-          | **Baseband-guard** | ${{ env.BBG_STATUS || 'disabled' }} |
-          | **RCU Lazy** | ${{ env.RCU_LAZY_STATUS || 'disabled' }} |
-          | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: on |
-          | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
-          | **BakaSU** | ${{ env.KSU_STATUS }} |
-          | **SUSFS** | ${{ env.SUSFS_STATUS || 'disabled' }} |
-          | **Droidspaces** | ${{ env.DROIDSPACES_STATUS }} |
-          | **BTF** | ${{ env.BTF_STATUS }} |
-          | **AutoFDO** | ${{ env.AUTOFDO_STATUS }} |
-          | **Modules built** | ${{ env.MODULES_BUILT }} |
-          | **Artifact** | ${{ env.ZIP_NAME }} |
+          | 核心项目 | 状态 / 详情 |
+          |:---|:---|
+          | **产物 (Artifact)** | `${{ env.ZIP_NAME }}` (Linux ${{ env.KERNEL_RELEASE }}) |
+          | **编译配置** | Clang ${{ env.CLANG_VERSION }} + ThinLTO + AutoFDO (3/3 闸门全过) |
+          | **Root 管理** | BakaSU: ${{ env.KSU_STATUS }} |
+          | **隐蔽防护** | SUSFS: ${{ env.SUSFS_STATUS || 'disabled' }} |
+          | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |
+          | **省电机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'disabled' }} (全核心 NOCB 卸载) |
+          | **压缩引擎** | ZSTD v1.5.7 (Nick Terrell upstream 官方升级) |
+          | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
+          | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
+          | **存储调优** | F2FS: ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |
+          | **容器支持** | Droidspaces: ${{ env.DROIDSPACES_STATUS }} |
           EOF

@@ -46,17 +46,6 @@
 # build/kernel repo and is NOT in this tree) is what normally picks the value.
 CONFIG_HZ_300=y
 
-# --- zram compression ------------------------------------------------------
-# GKI default is lzo-rle. lz4 is materially faster to decompress, which is
-# what matters on the zram hot path under memory pressure.
-# CONFIG_CRYPTO_LZ4 is already =y in the GKI base (gki_defconfig:745), so the
-# dependency holds.
-#
-# 6.6.142 also turns on ZRAM_MULTI_COMP and ZRAM_WRITEBACK in the base. Both
-# are additive: ZRAM_DEF_COMP_LZ4 still selects the default algorithm used when
-# no explicit zram.recompress_algorithm is set at boot, so this line still does
-# what it says.
-CONFIG_ZRAM_DEF_COMP_LZ4=y
 
 # --- BBRv3 congestion control (default) -------------------------------------
 # Requires .github/actions/bbrv3_backport.patch, a backport of BBRv3 from
