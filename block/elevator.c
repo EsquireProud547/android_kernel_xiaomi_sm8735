@@ -564,19 +564,13 @@ static inline bool elv_support_iosched(struct request_queue *q)
 }
 
 /*
- * For single queue devices, default to using mq-deadline. If we have multiple
- * queues or mq-deadline is not available, default to "none".
+ * Default to "none" (direct dispatch) I/O scheduler for all block devices.
+ * For high-speed multi-queue storage like UFS 4.0 and NVMe, bypassing
+ * software elevator queues eliminates lock contention and minimizes latency.
  */
 static struct elevator_type *elevator_get_default(struct request_queue *q)
 {
-	if (q->tag_set->flags & BLK_MQ_F_NO_SCHED_BY_DEFAULT)
-		return NULL;
-
-	if (q->nr_hw_queues != 1 &&
-	    !blk_mq_is_shared_tags(q->tag_set->flags))
-		return NULL;
-
-	return elevator_find_get(q, "mq-deadline");
+	return NULL;
 }
 
 /*

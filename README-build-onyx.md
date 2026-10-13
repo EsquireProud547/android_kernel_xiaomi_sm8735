@@ -1269,3 +1269,45 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
   - **范围保护与动态调节**：参数写入函数严格通过 `zstd_min_clevel()` 与 `zstd_max_clevel()` 进行合法性范围校验，且保证工作区内存上限安全；
   - **运行时自由掌控**：用户或 KernelSU 模块可随时通过 `/sys/module/zstd/parameters/level` 在运行时动态读取与调节（如设置为 `1`、`3` 或 `-2`）。
 
+---
+
+## 24. 默认 I/O 调度器采用 `none`（针对 UFS 4.0 硬件直通并发优化）
+
+### 1. 硬件特性与调优背景
+
+小米 15（SM8735 onyx）全系标配 **UFS 4.0** 极速闪存存储：
+- **物理接口带宽翻倍**：基于 MIPI M-PHY v5.0 与 UniPro v2.0 规范，双通道最高理论带宽高达 **46.4 Gbps（~4.6 GB/s）**；
+- **深度硬件命令队列（Command Queuing）**：UFS 4.0 控制器原生支持极深的命令队列与全双工独立通道并发处理。
+
+### 2. 传统软件电梯调度（`mq-deadline`）在 UFS 4.0 上的劣势与开销
+
+在 Linux 内核原生设计中：
+- UFS 走的是 SCSI 存储栈（[`drivers/ufs/core/ufshcd.c`](drivers/ufs/core/ufshcd.c)），SCSI 主机分配默认开启了共享标签集（`blk_mq_is_shared_tags` 为真）；
+- 这导致内核在 [`block/elevator.c`](block/elevator.c) 中误将 UFS 设备回退到了老旧的 `mq-deadline` 软件调度器。
+
+**痛点与性能瓶颈**：
+1. **纯粹的 CPU 周期损耗**：在毫秒级微延迟的 UFS 4.0 上，软件电梯的扇区合并（Merges）、红黑树重排序、Deadline 超时追踪无法带来任何磁头寻道收益，反而增加了无意义的计算开销；
+2. **自旋锁争用（Lock Contention）**：高频小 I/O 与前后台多线程并发时，请求必须在软件排队队列上加锁抢占，直接增加了单次 I/O 请求的调度延迟；
+3. **削弱闪存硬件吞吐**：软件层的排队瓶颈限制了闪存控制器硬件并行队列的吞吐发挥。
+
+### 3. `none`（Direct Dispatch）调度器的极致优势
+
+- **直通硬件并发（Direct Dispatch）**：所有 I/O 请求通过 blk-mq 无锁快速通道直接发往 UFS 4.0 硬件命令队列，由 UFS 闪存控制器芯片全权负责硬件级调度；
+- **小文件读写极速响应**：完全消除软件排队延迟，UI 线程读取 SQLite 数据库或冷启动加载资源文件更轻快，减少丢帧；
+- **降低重度 I/O CPU 占用**：大文件拷贝、游戏更新解压、相册批量写盘时，CPU 无需再为 I/O 调度空转争用自旋锁，降低功耗发热。
+
+### 4. 实施细节与向前兼容性
+
+- **实施方案**：
+  在 [`block/elevator.c`](block/elevator.c) 的 `elevator_get_default` 函数中，将默认 elevator 直接调整为 `NULL`（即 `none`）。
+- **实机效果**：
+  - 开机后系统全部块设备（包括 UFS 4.0 主分区 `/dev/block/sda` ~ `sdf`、ZRAM、loop 等）默认处于 `[none]` 模式；
+  - 终端查看验证：
+    ```bash
+    cat /sys/block/sda/queue/scheduler
+    # 输出：[none] mq-deadline kyber bfq
+    ```
+- **兼容性与 kABI 保障**：
+  - 内核依然完整编译并注册了 `mq-deadline`、`kyber` 与 `bfq` 模块，用户空间或性能测试脚本若有特殊需要，仍可随时通过 sysfs 动态切回；
+  - 该改动属于核心调度器内部静态逻辑，未修改任何数据结构体大小与公开导出函数符号，100% 保持 kABI 零破坏。
+

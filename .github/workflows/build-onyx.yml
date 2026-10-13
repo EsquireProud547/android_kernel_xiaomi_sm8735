@@ -740,6 +740,6 @@ jobs:
           | **压缩引擎** | ZSTD v1.5.7 (默认启用负级别 -1 / 支持动态参数) |
           | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
           | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
-          | **存储调优** | F2FS: ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |
+          | **存储调度** | I/O: none (UFS 4.0 硬件直通) + F2FS DEF_MIN_FSYNC_BLOCKS=20 |
           | **容器支持** | Droidspaces: ${{ env.DROIDSPACES_STATUS }} |
           EOF
