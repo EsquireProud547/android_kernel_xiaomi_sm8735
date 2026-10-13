@@ -28,17 +28,12 @@
 #
 # Verified against this tree's gki_defconfig by line number:
 #   98  CONFIG_CFI_CLANG=y     -> rules out FullLTO
-#   745 CONFIG_CRYPTO_LZ4=y    -> ZRAM_DEF_COMP_LZ4 dependency is satisfied
 #   (no CONFIG_HZ_* line)      -> HZ_300 cannot collide with an explicit value
 #   (no CONFIG_LTO_* line)     -> LTO_NONE is a Kconfig default, not a defconfig
 #                                 value, so merge_config does not see an override
 #
-# Link Time Optimization is NOT set here. It is generated at build time into
-# onyx_lto.fragment, under the `enable_thinlto` input, for the same reason
-# AutoFDO is: it has to be switchable, and a static fragment cannot be
-# switched off without also losing everything else in this file. The stock
-# device kernel uses LTO_NONE, so with enable_thinlto=false this build
-# matches it exactly.
+# AutoFDO & ThinLTO are enabled by default in CI workflow via build-time fragments.
+# ZRAM compression algorithm is deferred to userspace/KernelSU module.
 #
 
 # --- Timer frequency -------------------------------------------------------
