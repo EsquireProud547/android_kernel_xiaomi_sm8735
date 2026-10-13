@@ -563,9 +563,35 @@ jobs:
           # clean with ntsync.o at 177K.
           echo "Applying NTSync (base)..."
           patch -p1 --forward < .github/actions/ntsync_base.patch
-          echo "Applying NTSync (6.6 compat)..."
+          echo "Applying NTSync (compat)..."
           patch -p1 --forward < .github/actions/ntsync_compat_android15-6.6.patch
           echo "NTSYNC_STATUS=applied" >> $GITHUB_ENV
+
+      - name: Apply F2FS min fsync blocks optimization
+        run: |
+          # F2FS min fsync blocks optimization:
+          # Raises DEF_MIN_FSYNC_BLOCKS from 8 to 20 to prevent excessive IPU writes
+          # and reduce frame drops during frequent SQLite transactions.
+          echo "Applying F2FS min fsync blocks optimization..."
+          patch -p1 --forward < .github/actions/f2fs_congestion_tune.patch
+          echo "F2FS_TUNE_STATUS=applied" >> $GITHUB_ENV
+
+      - name: Apply Baseband-guard
+        run: |
+          # Baseband-guard: anti-formatting partition protector.
+          # Hooks block device write operations and enforces partition allowlist to protect
+          # modem, bootloader, trustzone and baseband partitions from raw userspace writes.
+          echo "Applying Baseband-guard..."
+          if curl -LSs "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh" \
+               | bash; then
+            BBG_SHA=$(git -C Baseband-guard rev-parse --short HEAD 2>/dev/null || echo unknown)
+            echo "  Baseband-guard resolved to: $BBG_SHA"
+            echo "BBG_STATUS=applied (@ $BBG_SHA)" >> $GITHUB_ENV
+          else
+            echo "BBG_STATUS=FAILED" >> $GITHUB_ENV
+            echo "::error::Baseband-guard integration failed"
+            exit 1
+          fi
 
       - name: Configure kernel (official Kleaf-style synthesis)
         # The logic lives in .github/actions/configure-kernel.sh, not here.
@@ -722,7 +748,9 @@ jobs:
           | **LTO** | ${{ env.LTO_STATUS }} |
           | **ZRAM** | lz4 |
           | **Congestion control** | BBRv3 (default) |
+          | **F2FS tuning** | ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |
           | **NTSync** | ${{ env.NTSYNC_STATUS || 'disabled' }} |
+          | **Baseband-guard** | ${{ env.BBG_STATUS || 'disabled' }} |
           | **Code gen** | ${{ env.CLANG_VERSION }} + ${{ env.LTO_STATUS }} + AutoFDO: ${{ inputs.enable_autofdo && 'on' || 'off' }} |
           | **Module sig** | SHA-256, not forced (stock `vendor_dlkm` still loads, kernel taints) |
           | **BakaSU** | ${{ env.KSU_STATUS }} |
@@ -732,6 +760,4 @@ jobs:
           | **AutoFDO** | ${{ env.AUTOFDO_STATUS }} |
           | **Modules built** | ${{ env.MODULES_BUILT }} |
           | **Artifact** | ${{ env.ZIP_NAME }} |
-
-          Not ported yet: BBRv3, NTSYNC, Baseband-guard.
           EOF

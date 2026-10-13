@@ -106,6 +106,18 @@ CONFIG_DEFAULT_TCP_CONG="bbr3"
 # offset 1), and drivers/misc/ compiles clean with ntsync.o at 177K.
 CONFIG_NTSYNC=y
 
+# --- Baseband-guard (Anti-Format / Partition Protection) --------------------
+# Protects critical modem, bootloader and firmware partitions from raw writes
+# by malicious userspace scripts with root access.
+#
+# Requires setup.sh from https://github.com/vc-teahouse/Baseband-guard.
+# In Linux 6.6 with modern LSM infrastructure, Baseband-guard must be registered
+# into CONFIG_LSM. CONFIG_LSM is not set in gki_defconfig (defaults in Kconfig),
+# so setting it here does not collide with the base defconfig.
+CONFIG_BBG=y
+CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"
+
+
 # --- Droidspaces (POSIX IPC for the container runtime) ---------------------
 # SOURCE: ravindu644/Droidspaces-OSS Documentation/Kernel-Configuration.md,
 # the "配置 GKI 内核" block, at commit 92cee27 (2026-10-05). That block is the

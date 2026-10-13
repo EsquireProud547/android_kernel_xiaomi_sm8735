@@ -193,6 +193,11 @@ sphinx_*/
 #                    .github/actions/droidspaces_sysvipc.patch \
 #                    .github/actions/libbpf_strchr_const.patch
 # Every one of those must exit 1 (not ignored). Do not skip this check.
+# Baseband-guard
+/Baseband-guard/
+/security/baseband-guard
+
 !.github/
 !/.github/
 !.github/actions/*.patch
+
