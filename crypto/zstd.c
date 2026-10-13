@@ -15,7 +15,30 @@
 #include <crypto/internal/scompress.h>
 
 
-#define ZSTD_DEF_LEVEL	3
+static int zstd_comp_level = -1;
+
+static int zstd_param_level_set(const char *val, const struct kernel_param *kp)
+{
+	int level, ret;
+
+	ret = kstrtoint(val, 10, &level);
+	if (ret)
+		return ret;
+
+	if (level < zstd_min_clevel() || level > zstd_max_clevel())
+		return -EINVAL;
+
+	*((int *)kp->arg) = level;
+	return 0;
+}
+
+static const struct kernel_param_ops zstd_param_level_ops = {
+	.set = zstd_param_level_set,
+	.get = param_get_int,
+};
+
+module_param_cb(level, &zstd_param_level_ops, &zstd_comp_level, 0644);
+MODULE_PARM_DESC(level, "ZSTD compression level (default -1; supports negative levels down to zstd_min_clevel)");
 
 struct zstd_ctx {
 	zstd_cctx *cctx;
@@ -26,14 +49,14 @@ struct zstd_ctx {
 
 static zstd_parameters zstd_params(void)
 {
-	return zstd_get_params(ZSTD_DEF_LEVEL, 0);
+	return zstd_get_params(zstd_comp_level, 0);
 }
 
 static int zstd_comp_init(struct zstd_ctx *ctx)
 {
 	int ret = 0;
-	const zstd_parameters params = zstd_params();
-	const size_t wksp_size = zstd_cctx_workspace_bound(&params.cParams);
+	const zstd_parameters bound_params = zstd_get_params(max(3, zstd_comp_level), 0);
+	const size_t wksp_size = zstd_cctx_workspace_bound(&bound_params.cParams);
 
 	ctx->cwksp = vzalloc(wksp_size);
 	if (!ctx->cwksp) {

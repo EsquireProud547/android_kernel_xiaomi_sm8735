@@ -737,7 +737,7 @@ jobs:
           | **隐蔽防护** | SUSFS: ${{ env.SUSFS_STATUS || 'disabled' }} |
           | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |
           | **省电机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'disabled' }} (全核心 NOCB 卸载) |
-          | **压缩引擎** | ZSTD v1.5.7 (Nick Terrell upstream 官方升级) |
+          | **压缩引擎** | ZSTD v1.5.7 (默认启用负级别 -1 / 支持动态参数) |
           | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
           | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
           | **存储调优** | F2FS: ${{ env.F2FS_TUNE_STATUS || 'disabled' }} (DEF_MIN_FSYNC_BLOCKS=20) |

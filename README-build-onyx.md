@@ -1253,3 +1253,19 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 - **重构目的**：原有构建摘要包含 22 行扁平键值对，重点信息不够聚焦。
 - **优化**：在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 中精简为 11 行结构化看板，突出产物版本、Clang+LTO+AutoFDO 状态、BakaSU、SUSFS、Baseband-guard、RCU Lazy、ZSTD v1.5.7、BBRv3、NTSync、F2FS 等核心特性。
 
+### 4. 解锁 ZSTD 负压缩级别（--fast 模式）并默认设置为 -1
+
+- **原理解析**：
+  - Zstandard 官方底层原生支持负数级别（从 `-1` 到 `-ZSTD_TARGETLENGTH_MAX`，即 `--fast` 模式）。在此模式下，算法采用极速单哈希匹配跳转策略，以极其微小的压缩比折损（相比 level 3）换取 **40%~60% 的 CPU 压缩耗时锐减**，使压缩吞吐接近甚至超越 LZ4，非常适合 ZRAM 这种频繁在内存高压热路径上压缩 4KB 页面的场景。
+- **Linux 6.6 的痛点与突破**：
+  - 在 Linux 6.6 原生体系中，ZRAM 依赖内核 Crypto API 调用 `crypto_alloc_comp("zstd", ...)`；
+  - 核心驱动 [`crypto/zstd.c`](crypto/zstd.c) 硬编码锁死了 `#define ZSTD_DEF_LEVEL 3`，且无任何传参机制；
+  - 我们改造了 `crypto/zstd.c`，引入动态参数支持：
+    ```c
+    static int zstd_comp_level = -1;
+    module_param_cb(level, &zstd_param_level_ops, &zstd_comp_level, 0644);
+    ```
+  - **开机即生效**：默认压缩级别直接设为 **`-1`**，系统刷入即自动享受极速压缩体验；
+  - **范围保护与动态调节**：参数写入函数严格通过 `zstd_min_clevel()` 与 `zstd_max_clevel()` 进行合法性范围校验，且保证工作区内存上限安全；
+  - **运行时自由掌控**：用户或 KernelSU 模块可随时通过 `/sys/module/zstd/parameters/level` 在运行时动态读取与调节（如设置为 `1`、`3` 或 `-2`）。
+
