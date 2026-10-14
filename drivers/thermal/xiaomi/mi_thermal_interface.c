@@ -1197,7 +1197,7 @@ static int thermal_check_panel(struct device_node *np)
 	struct drm_panel *panel;
 
 	count = of_count_phandle_with_args(np, "panel", NULL);
-	printk(KERN_ERR "%s: count of panel in node is: %d\n", __func__, count);
+	pr_info("%s: count of panel in node is: %d\n", __func__, count);
 	if (count <= 0) {
 #if IS_ENABLED(CONFIG_HAVE_MULTI_SCREEN)
 		goto find_sec_panel;
@@ -1207,48 +1207,48 @@ static int thermal_check_panel(struct device_node *np)
 
 	for (i = 0; i < count; i++) {
 		node = of_parse_phandle(np, "panel", i);
-		printk(KERN_ERR "%s: try to add of node panel: %pOF\n", __func__,
+		pr_info("%s: try to add of node panel: %pOF\n", __func__,
 		       node);
 		panel = of_drm_find_panel(node);
 		of_node_put(node);
-		if (!IS_ERR(panel)) {
+		if (!IS_ERR_OR_NULL(panel)) {
 			prim_panel = panel;
 			break;
 		} else {
 			prim_panel = NULL;
 		}
 	}
-	if (PTR_ERR(prim_panel) == -EPROBE_DEFER) {
-		pr_err("%s ERROR: Cannot fine prim_panel of node!", __func__);
+	if (!prim_panel) {
+		pr_warn("%s: Cannot find prim_panel of node!\n", __func__);
+	} else {
+		pr_info("%s: found prim_panel successfully\n", __func__);
 	}
-	printk(KERN_ERR
-	       "%s: count of panel in node PTR_ERR_prim_panel  is: %ld\n",
-	       __func__, PTR_ERR(prim_panel));
 #if IS_ENABLED(CONFIG_HAVE_MULTI_SCREEN)
 find_sec_panel:
 	count = of_count_phandle_with_args(np, "panel1", NULL);
-	printk(KERN_ERR "%s: count of panel1 in node is: %d\n", __func__,
+	pr_info("%s: count of panel1 in node is: %d\n", __func__,
 	       count);
 	if (count <= 0) {
 		goto out;
 	}
 	for (i = 0; i < count; i++) {
 		node = of_parse_phandle(np, "panel1", i);
-		printk(KERN_ERR "%s: try to add of node panel1: %pOF\n", __func__,
+		pr_info("%s: try to add of node panel1: %pOF\n", __func__,
 		       node);
 		panel = of_drm_find_panel(node);
 		of_node_put(node);
-		if (!IS_ERR(panel)) {
+		if (!IS_ERR_OR_NULL(panel)) {
 			sec_panel = panel;
 			break;
+		} else {
+			sec_panel = NULL;
 		}
 	}
-	if (PTR_ERR(sec_panel) == -EPROBE_DEFER) {
-		pr_err("%s ERROR: Cannot fine sec_panel of node!", __func__);
+	if (!sec_panel) {
+		pr_warn("%s: Cannot find sec_panel of node!\n", __func__);
+	} else {
+		pr_info("%s: found sec_panel successfully\n", __func__);
 	}
-	printk(KERN_ERR
-	       "%s: count of panel1 in node PTR_ERR_sec_panel  is: %ld\n",
-	       __func__, PTR_ERR(sec_panel));
 #endif
 out:
 	return 0;

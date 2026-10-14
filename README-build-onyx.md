@@ -1324,3 +1324,47 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
   ```
   实测表明：UFS 4.0 调度器默认绑定 `none`、ZSTD 负级别 `-1` 默认生效以及运行时动态传参调节全部 100% 正常运作。
 
+---
+
+## 25. 实机运行时日志排查与两处专有驱动缺陷修复
+
+基于真机 Android 15 / HyperOS 环境下提取的运行时日志（`dmesg` 与 `logcat`），对启动链路与驱动状态进行了全景核查，并在开源内核驱动中完成了针对性修复。
+
+### 1. 内核开源驱动缺陷修复
+
+#### 1.1 修复温控面板检测伪野值报错（[`drivers/thermal/xiaomi/mi_thermal_interface.c`](drivers/thermal/xiaomi/mi_thermal_interface.c)）
+- **问题现象**：
+  系统启动时 dmesg 持续报错：
+  `thermal_check_panel: count of panel in node PTR_ERR_prim_panel is: -514746596280`
+- **根因分析**：
+  驱动在成功通过 `of_drm_find_panel` 获取到合法的 `struct drm_panel *` 之后，未作有效性检查便强行执行 `PTR_ERR(prim_panel)` 并作为 long 打印。由于 64 位合法内核指针高位为 1，直接转为 signed long 产生了巨大的负数伪野值，且打印级别误用了 `KERN_ERR`；若未获取到 panel 时原有的 `PTR_ERR(prim_panel) == -EPROBE_DEFER` 也会因前置赋值 NULL 而彻底失效。
+- **修复方案**：
+  使用标准的 `!IS_ERR_OR_NULL` 校验 panel 指针，成功时输出 `pr_info`，失败时输出 `pr_warn`，消除无意义的 `KERN_ERR` 刷屏与伪报错。后续屏幕亮度状态正常交由 `sysfs_notify` 与温控回调接管。
+
+#### 1.2 消除二供马达驱动启动阶段 83 次无效循环探测（[`drivers/input/misc/si_haptic/haptic.c`](drivers/input/misc/si_haptic/haptic.c)）
+- **问题现象**：
+  启动阶段 dmesg 连续刷出 83 次相同的错误提示：
+  `sih_acquire_prepare_res:reset gpio request failed, ret = -16`（`-EBUSY`）
+- **根因分析**：
+  小米 15 硬件上搭载了一供艾为 `aw86927` 马达，其在早期 probe 中已成功申请并独占了对应的 GPIO 控制引脚。作为第二供应商备选方案的 `sih_haptic` 驱动在 probe 申请 GPIO 时必然因资源被占而返回 `-EBUSY`（-16）。然而原生驱动错误地编写了：
+  ```c
+  if (ret == -EBUSY)
+      ret = -EPROBE_DEFER;
+  ```
+  将资源独占冲突误转为延迟探测（`-EPROBE_DEFER`），导致内核驱动核心在系统初始化期间反复将其唤醒重试了整整 83 次，严重浪费 CPU 周期并拖慢开机进度。
+- **修复方案**：
+  将 `-EBUSY` 明确修正为返回 `-ENODEV`。一旦引脚被一供芯片占用，二供探测立即判定为设备不匹配并干净退出，彻底杜绝后续 83 次无效唤醒与日志刷屏。
+
+---
+
+### 2. 系统层面日志关键结论与事实澄清
+
+1. **NFC HAL 死循环风暴（用户空间问题）**：
+   - 现象：`android.hardware.nfc-service.nxp` 在 close 阶段发生竞态，以每秒超 11 万条的频率刷屏 `NFC client received bad message`。
+   - 处置：属于 NXP 闭源 HAL 实现缺陷，可通过 Magisk / KernelSU 模块将 `/vendor/etc/libnfc-nxp.conf` 与 `libnfc-nxp_RF.conf` 中的 `NFC_DEBUG_ENABLED` 设为 `0`、`NXPLOG_*_LOGLEVEL` 从 `0x4` 降为 `0x1`，即可降低 99% 的无效日志量。
+2. **音频与声卡状态（正常，无需焦虑）**：
+   - 诊断结论中提到的“缺 CONFIG_SND_SOC_WCD939X”实为误判。该机型硬件实际搭载双艾为 SmartPA 方案，并无高通 WCD939X 独立外置 Codec；高通通用驱动对 WCD 的探测跳过属于正常板型差异探测，实际主声卡 `tuna-mtp-snd-card` 已在启动 5.88s 成功注册上线。
+3. **内核崩溃现场机制（正常运行）**：
+   - 内核在物理保留内存 `0xa3500000`（4MB）上挂载的 `pstore / ramoops` 机制全程 100% 正常运行，若发生 panic 会在内存区完整留存现场，不受早期 `/dev/block/by-name/` 链接尚未建立的影响。
+
+

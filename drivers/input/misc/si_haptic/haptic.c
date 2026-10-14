@@ -3499,7 +3499,7 @@ static int sih_i2c_probe(struct i2c_client *i2c)
 	ret = sih_acquire_prepare_res(&i2c->dev, sih_haptic);
 	if (ret) {
 		if (ret == -EBUSY)
-			ret = -EPROBE_DEFER;
+			ret = -ENODEV;
 		goto err_prepare_res;
 	}
 
