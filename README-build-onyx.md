@@ -1367,4 +1367,41 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 3. **内核崩溃现场机制（正常运行）**：
    - 内核在物理保留内存 `0xa3500000`（4MB）上挂载的 `pstore / ramoops` 机制全程 100% 正常运行，若发生 panic 会在内存区完整留存现场，不受早期 `/dev/block/by-name/` 链接尚未建立的影响。
 
+---
+
+## 26. NoMount 原生内建集成（可选开关）与工作流优化
+
+引入先进的 **NoMount**（VFS 内存重定向与虚拟文件注入子系统），并将其原生内建至内核树，配合 GitHub Actions CI 提供灵活的可选构建开关。
+
+### 1. NoMount 核心机制与架构优势
+
+传统 Root 模块方案（Magic Mount / OverlayFS）依赖修改全局挂载表并会在 `/proc/mounts` 中留下显眼特征，极易被银行及反作弊应用探测。
+
+**NoMount 采用纯内存级 VFS 劫持与路径映射**：
+- **零真实挂载（Zero Mount Pollution）**：直接在内核内存缓存区动态劫持目标父目录的 `i_op->lookup`、`f_op->iterate_shared` 与 `d_op->d_revalidate` 操作。完全不生成真实挂载点，`/proc/mounts` 保持 100% 纯净；
+- **全分区兼容**：对只读文件系统（EROFS）与读写文件系统（F2FS / ext4）天然通用；
+- **原生白名单隔离（UID Exclusion）**：内置基于 Bloom Filter 的高效 UID 过滤器。当被风控隔离的应用（如银行、检测工具）发起路径查询时，NoMount 直接放行交由内核原生物理路径处理，使受限应用只能看到未修改的出厂官方系统；
+- **微内核式隐秘通信**：用户态工具（`nm`）与内核通过 Linux 原生密钥环子系统（`register_key_type("nomount")` 与 `add_key`）以内存地址传递数据，完全无需创建暴露的 `/dev` 字符设备节点或 IOCTL 接口。
+
+### 2. 内核树原生内建（Built-in）实现
+
+相较于使用官方预编译的第三方 `.ko` 外部模块（LKM），原生内建拥有决定性优势：
+- **消除符号版本（vermagic / MODVERSIONS）不匹配风险**：我们的内核集成了 BakaSU、SUSFS、Baseband-guard 等多项定制特性，外部预编译模块极易因符号校验失败或偏移错误导致崩溃；
+- **无模块痕迹（`/proc/modules` 绝对纯净）**：作为内核原生子系统随系统启动时在 `fs_initcall` 阶段即可就绪，`/proc/modules` 中不加载任何外部 `.ko`，杜绝任何扫描内核模块列表的检测手段；
+- **源码集成结构**：
+  - 源码常驻：[`fs/nomount/`](fs/nomount/)（`nomount.c`、`nomount.h`、`Makefile`、`Kconfig`）；
+  - 配置入口：[`fs/Kconfig`](fs/Kconfig) 挂载 `source "fs/nomount/Kconfig"`；
+  - 编译规则：[`fs/Makefile`](fs/Makefile) 挂载 `obj-$(CONFIG_NOMOUNT) += nomount/`。
+
+### 3. CI 工作流可选开关与三道闸门验证
+
+- **可选构建开关**：
+  - 在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 的 `workflow_dispatch` 中新增 `enable_nomount`（boolean，默认 `true`）；
+  - 在 [`.github/actions/configure-kernel.sh`](.github/actions/configure-kernel.sh) 中根据参数动态生成 `onyx_nomount.fragment`（`CONFIG_NOMOUNT=y`），零冲突通过 Gate 1、Gate 2 与 Gate 3；
+  - 若用户手动关闭该开关，则保持未配置状态，不引入任何代码执行开销。
+- **工作流输入精简**：
+  - 彻底移除了未使用的 `version`（"Custom version name (optional)"）输入项，产物打包统一以 `${{ github.run_number }}` 与构建日期命名；
+  - 在构建完成摘要看板中实时展示 NoMount 集成状态。
+
+
 

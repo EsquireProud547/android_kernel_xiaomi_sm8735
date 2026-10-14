@@ -19,7 +19,7 @@
 # which is how it is tested.
 #
 # Inputs (all supplied as environment variables by the workflow step):
-#   ENABLE_SUSFS, ENABLE_VENDOR_MODULES, ENABLE_AUTOFDO, ENABLE_THINLTO,
+#   ENABLE_SUSFS, ENABLE_NOMOUNT, ENABLE_VENDOR_MODULES, ENABLE_AUTOFDO, ENABLE_THINLTO,
 #   ENABLE_BTF            booleans, as "true"/"false"
 # From the workflow-level env: CLANG_VERSION, VENDOR_FRAGMENT,
 # KERNEL_CODENAME, SUSFS_BRANCH. From an earlier step: BTF_UNAVAILABLE.
@@ -75,6 +75,14 @@ for f in $FRAGMENTS; do echo "  - $f"; done
 if [ "$ENABLE_SUSFS" = "true" ]; then
   FRAGMENTS="$FRAGMENTS $SUSFS_FRAGMENT"
   echo "           $SUSFS_FRAGMENT (enable_susfs)"
+fi
+
+NOMOUNT_FRAGMENT=""
+if [ "$ENABLE_NOMOUNT" = "true" ]; then
+  NOMOUNT_FRAGMENT=onyx_nomount.fragment
+  echo "CONFIG_NOMOUNT=y" > "$NOMOUNT_FRAGMENT"
+  FRAGMENTS="$FRAGMENTS $NOMOUNT_FRAGMENT"
+  echo "           $NOMOUNT_FRAGMENT (enable_nomount)"
 fi
 
 # ---- Xiaomi OEM bits, built-in entries only -----------------------
@@ -382,7 +390,7 @@ if [ "$ENABLE_AUTOFDO" != "true" ]; then
 fi
 echo "  [codegen] $(grep -E '^(CONFIG_LTO_NONE|CONFIG_LTO_CLANG_THIN|CONFIG_AUTOFDO_CLANG)=' out/.config | tr '\n' ' ')"
 
-rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT"
+rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT" "$NOMOUNT_FRAGMENT"
 
 # ---- feature status ----------------------------------------------
 grep -q "^CONFIG_SYSVIPC=y" out/.config \
@@ -393,6 +401,14 @@ if [ "$ENABLE_SUSFS" = "true" ]; then
   grep -q "^CONFIG_KSU_SUSFS=y" out/.config \
     && echo "SUSFS_STATUS=applied (CONFIG_KSU_SUSFS=y)" >> $GITHUB_ENV \
     || { echo "::error::SUSFS symbols missing"; exit 1; }
+fi
+
+if [ "$ENABLE_NOMOUNT" = "true" ]; then
+  grep -q "^CONFIG_NOMOUNT=y" out/.config \
+    && echo "NOMOUNT_STATUS=applied (CONFIG_NOMOUNT=y)" >> $GITHUB_ENV \
+    || { echo "::error::CONFIG_NOMOUNT missing"; exit 1; }
+else
+  echo "NOMOUNT_STATUS=disabled by input" >> $GITHUB_ENV
 fi
 
 if [ "$BTF_OFF" = "0" ]; then
@@ -415,7 +431,7 @@ if grep -q "^CONFIG_RCU_LAZY=y" out/.config && ! grep -q "^CONFIG_RCU_LAZY_DEFAU
 fi
 
 echo "=== Key configs ==="
-for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_HZ CONFIG_LTO_CLANG_THIN \
+for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_NOMOUNT CONFIG_HZ CONFIG_LTO_CLANG_THIN \
   CONFIG_CFI_CLANG CONFIG_ZRAM_DEF_COMP CONFIG_OVERLAY_FS CONFIG_SECCOMP \
   CONFIG_TCP_CONG_BBR3 CONFIG_DEFAULT_BBR3 CONFIG_DEFAULT_TCP_CONG CONFIG_NTSYNC \
   CONFIG_BBG CONFIG_LSM \

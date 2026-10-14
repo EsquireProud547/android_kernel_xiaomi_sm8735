@@ -114,10 +114,10 @@ on:
         description: "BakaSU ref: branch, tag, or commit SHA. Pinned to a commit before 48fa4bb7 because upstream suspended the SUSFS build there"
         type: string
         default: "5b76b884c75f729a220bb317aa4a4fc78f0e0e9c"
-      version:
-        description: "Custom version name (optional)"
-        type: string
-        default: ""
+      enable_nomount:
+        description: "Enable NoMount (VFS path redirection & virtual file injection)"
+        type: boolean
+        default: true
       enable_vendor_modules:
         description: "Merge the built-in (=y) entries of vendor/onyx_perf.config"
         type: boolean
@@ -595,6 +595,7 @@ jobs:
         # limit and can be run locally, which is how it is tested.
         env:
           ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+          ENABLE_NOMOUNT: ${{ inputs.enable_nomount }}
           ENABLE_VENDOR_MODULES: ${{ inputs.enable_vendor_modules }}
           ENABLE_AUTOFDO: "true"
           ENABLE_THINLTO: "true"
@@ -678,7 +679,7 @@ jobs:
             find out -name '*.ko' -exec cp --parents {} "$TEMP_DIR/modules/" \; 2>/dev/null || true
           fi
 
-          VERSION="${{ inputs.version != '' && inputs.version || github.run_number }}"
+          VERSION="${{ github.run_number }}"
           KREL="${{ env.KERNEL_RELEASE }}"
           KS="${{ env.KERNEL_CODENAME }} Kernel v${VERSION} (Linux ${KREL})"
 
@@ -741,5 +742,6 @@ jobs:
           | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
           | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
           | **存储调度** | I/O: none (UFS 4.0 硬件直通) + F2FS DEF_MIN_FSYNC_BLOCKS=20 |
+          | **路径重定向** | NoMount: ${{ env.NOMOUNT_STATUS || 'disabled' }} (VFS 内存级虚拟文件注入) |
           | **容器支持** | Droidspaces: ${{ env.DROIDSPACES_STATUS }} |
           EOF
