@@ -185,11 +185,10 @@ fi
 #
 # This is the second of the two codegen switches, and both exist for
 # the same reason. The stock device kernel -- the one whose config was
-# extracted from the running system's own boot image, built from this
-# same tree with this same clang r596125 -- uses LTO_NONE and has
-# AUTOFDO_CLANG=n. Any of our tuning that the vendor does not use is
-# a suspect when a build boots to the splash screen and stops, and
-# these are the two.
+# extracted from the running system's own boot image, originally built with
+# stock AOSP clang -- uses LTO_NONE and has AUTOFDO_CLANG=n. Any of our
+# tuning that the vendor does not use is a suspect when a build boots to
+# the splash screen and stops, and these are the two.
 #
 # Generated as a fragment rather than left in onyx_gki.fragment so
 # that turning it off does not cost HZ_300, SYSVIPC and the rest.

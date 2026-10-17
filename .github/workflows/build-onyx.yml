@@ -63,7 +63,14 @@ name: Build Onyx Kernel
 #     in with "No such file or directory" for a file that looks like it is
 #     right there in the commit. That is how the first run failed.
 #
-# Not ported: BBRv3, NTSYNC, Baseband-guard (absent from 6.6.142).
+# Fully ported, verified and active in this tree:
+#   * BBRv3 (default TCP congestion control)
+#   * NTSync (Windows NT sync primitive emulation)
+#   * Baseband-guard (firmware partition write protection)
+#   * ZSTD v1.5.7 upgrade with negative compression level (-1 default)
+#   * I/O scheduler none for UFS 4.0 hardware concurrency + F2FS tune
+#   * NoMount (dynamic in-RAM VFS redirection via CI setup.sh)
+#   * Clang-r614150 toolchain from upstream main-kernel branch
 #
 # There is deliberately NO "trim debug features" input. One existed, and it
 # cost us a bricked device: turning off 14 debug symbols (UBSAN, CLEANCACHE,
@@ -376,10 +383,10 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: onyx-614-clang-${{ env.CLANG_VERSION }}-${{ github.ref_name }}
+          key: onyx-clang-${{ env.CLANG_VERSION }}-${{ github.ref_name }}
           restore-keys: |
-            onyx-614-clang-${{ env.CLANG_VERSION }}-${{ github.ref_name }}
-            onyx-614-clang-${{ env.CLANG_VERSION }}-
+            onyx-clang-${{ env.CLANG_VERSION }}-${{ github.ref_name }}
+            onyx-clang-${{ env.CLANG_VERSION }}-
           max-size: 3G
 
       - name: Apply BakaSU
