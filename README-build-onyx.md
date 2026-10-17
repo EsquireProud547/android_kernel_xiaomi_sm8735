@@ -1369,9 +1369,9 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 
 ---
 
-## 26. NoMount 原生内建集成（可选开关）与工作流优化
+## 26. NoMount 动态集成（CI 在线注入 / 零源码污染）与可选构建开关
 
-引入先进的 **NoMount**（VFS 内存重定向与虚拟文件注入子系统），并将其原生内建至内核树，配合 GitHub Actions CI 提供灵活的可选构建开关。
+引入先进的 **NoMount**（VFS 内存重定向与虚拟文件注入子系统），采用与 BakaSU、Baseband-guard 一致的 **CI 构建期动态注入方案**，实现上游代码零维护自动同步，并提供灵活的构建开关。
 
 ### 1. NoMount 核心机制与架构优势
 
@@ -1383,25 +1383,34 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 - **原生白名单隔离（UID Exclusion）**：内置基于 Bloom Filter 的高效 UID 过滤器。当被风控隔离的应用（如银行、检测工具）发起路径查询时，NoMount 直接放行交由内核原生物理路径处理，使受限应用只能看到未修改的出厂官方系统；
 - **微内核式隐秘通信**：用户态工具（`nm`）与内核通过 Linux 原生密钥环子系统（`register_key_type("nomount")` 与 `add_key`）以内存地址传递数据，完全无需创建暴露的 `/dev` 字符设备节点或 IOCTL 接口。
 
-### 2. 内核树原生内建（Built-in）实现
+### 2. CI 动态拉取注入实现（免除手动同步维护负担）
 
-相较于使用官方预编译的第三方 `.ko` 外部模块（LKM），原生内建拥有决定性优势：
-- **消除符号版本（vermagic / MODVERSIONS）不匹配风险**：我们的内核集成了 BakaSU、SUSFS、Baseband-guard 等多项定制特性，外部预编译模块极易因符号校验失败或偏移错误导致崩溃；
-- **无模块痕迹（`/proc/modules` 绝对纯净）**：作为内核原生子系统随系统启动时在 `fs_initcall` 阶段即可就绪，`/proc/modules` 中不加载任何外部 `.ko`，杜绝任何扫描内核模块列表的检测手段；
-- **源码集成结构**：
-  - 源码常驻：[`fs/nomount/`](fs/nomount/)（`nomount.c`、`nomount.h`、`Makefile`、`Kconfig`）；
-  - 配置入口：[`fs/Kconfig`](fs/Kconfig) 挂载 `source "fs/nomount/Kconfig"`；
-  - 编译规则：[`fs/Makefile`](fs/Makefile) 挂载 `obj-$(CONFIG_NOMOUNT) += nomount/`。
+为了避免直接修改内核源码树带来的“版本同步与手动打补丁麻烦”的痛点，我们采用了官方提供的 `kernel/setup.sh` 自动化注入架构：
+- **零源码树污染**：本地内核 Git 树保持 100% 纯净，无需将 `fs/nomount/` 源码提交到仓库；
+- **自动跟进上游修复**：每次 CI 运行时，通过官方脚本动态拉取最新代码（默认跟踪 `dev` 分支，亦可在 `workflow_dispatch` 的 `nomount_ref` 中锁定特定 tag 或 commit SHA）；
+- **产物依然是原生 Built-in 内建**：动态软链并在 `fs_initcall` 阶段随内核编译为内置子系统（`CONFIG_NOMOUNT=y`），`/proc/modules` 零外部 `.ko` 痕迹，杜绝任何外部驱动加载冲突；
+- **灵活开关**：在 CI 中关闭 `enable_nomount` 时，不仅不注入配置，而且完全不执行克隆与软链逻辑，内核保持完全原始构建。
 
-### 3. CI 工作流可选开关与三道闸门验证
+---
 
-- **可选构建开关**：
-  - 在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 的 `workflow_dispatch` 中新增 `enable_nomount`（boolean，默认 `true`）；
-  - 在 [`.github/actions/configure-kernel.sh`](.github/actions/configure-kernel.sh) 中根据参数动态生成 `onyx_nomount.fragment`（`CONFIG_NOMOUNT=y`），零冲突通过 Gate 1、Gate 2 与 Gate 3；
-  - 若用户手动关闭该开关，则保持未配置状态，不引入任何代码执行开销。
-- **工作流输入精简**：
-  - 彻底移除了未使用的 `version`（"Custom version name (optional)"）输入项，产物打包统一以 `${{ github.run_number }}` 与构建日期命名；
-  - 在构建完成摘要看板中实时展示 NoMount 集成状态。
+## 27. 编译器升级至 Android Clang `clang-r614150`（基于 `main-kernel` 分支）
+
+为了充分发挥最新 LLVM/Clang 前后端优化能力，将内核构建编译器由 `clang-r596125` 全面升级至 Google 官方最新的 **`clang-r614150`**。
+
+### 1. 工具链获取与分支对应
+
+- **归档仓库**：`https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86`
+- **上游分支**：Google 已在最新的 **`main-kernel`** 分支中合入了 `r614150`（提交：`Merge "Update clang-stable to r614150." into main`）；
+- **环境变量配置**：
+  ```yaml
+  env:
+    CLANG_VERSION: clang-r614150
+    CLANG_BRANCH: main-kernel
+  ```
+- **构建适配验证**：
+  - 下载地址经实测返回 `HTTP/2 200`（`linux-x86-refs/heads/main-kernel-clang-r614150.tar.gz`）；
+  - 完美支持 AArch64 架构指令集优化、ThinLTO 跨模块链接优化与 KCFI 类型标识校验。
+
 
 
 

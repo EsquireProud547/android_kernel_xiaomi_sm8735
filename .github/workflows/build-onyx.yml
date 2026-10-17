@@ -77,8 +77,8 @@ name: Build Onyx Kernel
 # rather than just emitting diagnostics. See README-build-onyx.md section 11.
 
 env:
-  CLANG_VERSION: clang-r596125
-  CLANG_BRANCH: android17-release
+  CLANG_VERSION: clang-r614150
+  CLANG_BRANCH: main-kernel
   VENDOR_FRAGMENT: arch/arm64/configs/vendor/onyx_perf.config
   KERNEL_CODENAME: Onyx
   # susfs4ksu has no android17-6.6 branch; gki-android15-6.6 is its only 6.6
@@ -118,6 +118,10 @@ on:
         description: "Enable NoMount (VFS path redirection & virtual file injection)"
         type: boolean
         default: true
+      nomount_ref:
+        description: "NoMount ref: branch (dev/master), tag, or commit SHA"
+        type: string
+        default: "dev"
       enable_vendor_modules:
         description: "Merge the built-in (=y) entries of vendor/onyx_perf.config"
         type: boolean
@@ -582,6 +586,25 @@ jobs:
           else
             echo "BBG_STATUS=FAILED" >> $GITHUB_ENV
             echo "::error::Baseband-guard integration failed"
+            exit 1
+          fi
+
+      - name: Apply NoMount
+        if: inputs.enable_nomount
+        run: |
+          # NoMount: VFS path redirection & virtual file injection.
+          # Dynamically fetched from upstream via its official kernel/setup.sh,
+          # keeping the kernel git tree 100% clean and always up-to-date with upstream.
+          NOMOUNT_REF="${{ inputs.nomount_ref != '' && inputs.nomount_ref || 'dev' }}"
+          echo "Applying NoMount (ref: $NOMOUNT_REF)..."
+          if curl -LSs "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" \
+               | bash -s -- "$NOMOUNT_REF"; then
+            NM_SHA=$(git -C NoMount rev-parse --short HEAD 2>/dev/null || echo unknown)
+            echo "  NoMount resolved to: $NM_SHA"
+            echo "NOMOUNT_STATUS=applied ($NOMOUNT_REF @ $NM_SHA)" >> $GITHUB_ENV
+          else
+            echo "NOMOUNT_STATUS=FAILED ($NOMOUNT_REF)" >> $GITHUB_ENV
+            echo "::error::NoMount integration failed"
             exit 1
           fi
 
