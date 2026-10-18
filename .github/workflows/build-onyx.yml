@@ -137,6 +137,15 @@ on:
         description: "BTF for eBPF/CO-RE (needs pahole >= 1.21; auto-disabled if missing)"
         type: boolean
         default: true
+      timer_hz:
+        description: "Kernel timer frequency HZ (250 default/balanced, 300 video-sync, 100 power-save, 1000 low-latency)"
+        type: choice
+        options:
+          - "250"
+          - "300"
+          - "100"
+          - "1000"
+        default: "250"
       bundle_modules:
         description: "Also put built .ko files into the zip under modules/ (not flashed)"
         type: boolean
@@ -630,6 +639,7 @@ jobs:
           ENABLE_AUTOFDO: "true"
           ENABLE_THINLTO: "true"
           ENABLE_BTF: ${{ inputs.enable_btf }}
+          TIMER_HZ: ${{ inputs.timer_hz }}
         run: .github/actions/configure-kernel.sh
       - name: Build kernel
         run: |
@@ -764,6 +774,7 @@ jobs:
           |:---|:---|
           | **产物 (Artifact)** | `${{ env.ZIP_NAME }}` (Linux ${{ env.KERNEL_RELEASE }}) |
           | **编译配置** | Clang ${{ env.CLANG_VERSION }} + ThinLTO + AutoFDO (3/3 闸门全过) |
+          | **时钟频率** | ${{ env.HZ_STATUS || '250Hz' }} |
           | **Root 管理** | BakaSU: ${{ env.KSU_STATUS }} |
           | **隐蔽防护** | SUSFS: ${{ env.SUSFS_STATUS || 'disabled' }} |
           | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |

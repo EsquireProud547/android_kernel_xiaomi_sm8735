@@ -21,6 +21,7 @@
 # Inputs (all supplied as environment variables by the workflow step):
 #   ENABLE_SUSFS, ENABLE_NOMOUNT, ENABLE_VENDOR_MODULES, ENABLE_AUTOFDO, ENABLE_THINLTO,
 #   ENABLE_BTF            booleans, as "true"/"false"
+#   TIMER_HZ              integer string ("100", "250", "300", "1000", default: "250")
 # From the workflow-level env: CLANG_VERSION, VENDOR_FRAGMENT,
 # KERNEL_CODENAME, SUSFS_BRANCH. From an earlier step: BTF_UNAVAILABLE.
 #
@@ -84,6 +85,27 @@ if [ "$ENABLE_NOMOUNT" = "true" ]; then
   FRAGMENTS="$FRAGMENTS $NOMOUNT_FRAGMENT"
   echo "           $NOMOUNT_FRAGMENT (enable_nomount)"
 fi
+
+# ---- Timer frequency (HZ) ----------------------------------------
+# Kernel choice supports: 100, 250 (default), 300, 1000.
+# 250 Hz is standard Android balance (battery efficiency + responsiveness).
+# 300 Hz is video-rate aligned (30/60fps divisor).
+# 1000 Hz provides low latency for gaming/desktop responsiveness.
+# 100 Hz minimizes interrupt wakeups for server/low-power tasks.
+HZ_FRAGMENT=""
+TARGET_HZ="${TIMER_HZ:-250}"
+case "$TARGET_HZ" in
+  100|250|300|1000)
+    HZ_FRAGMENT=onyx_hz.fragment
+    echo "CONFIG_HZ_${TARGET_HZ}=y" > "$HZ_FRAGMENT"
+    FRAGMENTS="$FRAGMENTS $HZ_FRAGMENT"
+    echo "           $HZ_FRAGMENT (timer_hz=${TARGET_HZ})"
+    ;;
+  *)
+    echo "::error::Invalid TIMER_HZ '$TARGET_HZ'. Must be one of 100, 250, 300, 1000."
+    exit 1
+    ;;
+esac
 
 # ---- Xiaomi OEM bits, built-in entries only -----------------------
 # The 33 "=m" entries in vendor/onyx_perf.config are OEM modules that
@@ -389,9 +411,18 @@ if [ "$ENABLE_AUTOFDO" != "true" ]; then
 fi
 echo "  [codegen] $(grep -E '^(CONFIG_LTO_NONE|CONFIG_LTO_CLANG_THIN|CONFIG_AUTOFDO_CLANG)=' out/.config | tr '\n' ' ')"
 
-rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT" "$NOMOUNT_FRAGMENT"
+rm -f "$MERGE_OUT" "$VENDOR_BUILTIN" "$AUTOFDO_FRAGMENT" "$LTO_FRAGMENT" "$NOMOUNT_FRAGMENT" "$HZ_FRAGMENT"
 
 # ---- feature status ----------------------------------------------
+HZ_VAL=$(grep "^CONFIG_HZ=" out/.config 2>/dev/null | cut -d= -f2)
+if [ -n "$HZ_VAL" ]; then
+  echo "HZ_STATUS=${HZ_VAL}Hz" >> $GITHUB_ENV
+  echo "  [timer] CONFIG_HZ=${HZ_VAL} (CONFIG_HZ_${HZ_VAL}=y)"
+else
+  echo "::error::CONFIG_HZ missing in out/.config"
+  exit 1
+fi
+
 grep -q "^CONFIG_SYSVIPC=y" out/.config \
   && echo "DROIDSPACES_STATUS=applied (SYSVIPC=y, kABI-safe)" >> $GITHUB_ENV \
   || { echo "::error::CONFIG_SYSVIPC missing -- Droidspaces IPC unavailable"; exit 1; }

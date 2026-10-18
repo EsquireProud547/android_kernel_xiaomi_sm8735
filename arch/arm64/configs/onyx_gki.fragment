@@ -28,18 +28,20 @@
 #
 # Verified against this tree's gki_defconfig by line number:
 #   98  CONFIG_CFI_CLANG=y     -> rules out FullLTO
-#   (no CONFIG_HZ_* line)      -> HZ_300 cannot collide with an explicit value
+#   (no CONFIG_HZ_* line)      -> Dynamic HZ fragment cannot collide with an explicit value
 #   (no CONFIG_LTO_* line)     -> LTO_NONE is a Kconfig default, not a defconfig
 #                                 value, so merge_config does not see an override
 #
-# AutoFDO & ThinLTO are enabled by default in CI workflow via build-time fragments.
+# AutoFDO, ThinLTO & Timer HZ are managed via build-time fragments.
 # ZRAM compression algorithm is deferred to userspace/KernelSU module.
 #
 
 # --- Timer frequency -------------------------------------------------------
-# GKI default is HZ_250; the stock GKI fragment (which lives in the external
-# build/kernel repo and is NOT in this tree) is what normally picks the value.
-CONFIG_HZ_300=y
+# Injected dynamically via CI fragment (onyx_hz.fragment).
+# Default is HZ_250 (balanced), configurable via workflow_dispatch to
+# 100, 250, 300, or 1000 Hz. Leaving it unhardcoded here avoids choice
+# conflicts during multi-fragment synthesis.
+
 
 
 # --- BBRv3 congestion control (default) -------------------------------------

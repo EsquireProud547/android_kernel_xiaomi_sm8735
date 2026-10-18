@@ -201,3 +201,6 @@ sphinx_*/
 !/.github/
 !.github/actions/*.patch
 
+# CI generated dynamic fragments
+/*.fragment
+

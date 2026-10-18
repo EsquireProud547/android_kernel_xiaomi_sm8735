@@ -190,7 +190,7 @@ config 合成（闸门 1/2/3 全过），不是照着文档抄。
 
 | 符号 | 值 |
 |---|---|
-| `CONFIG_HZ` | 300 |
+| `CONFIG_HZ` | 250（默认，支持手动选择 100 / 250 / 300 / 1000） |
 | `CONFIG_LTO_CLANG_THIN` | y（`CONFIG_CFI_CLANG=y`，所以不能用 FullLTO） |
 | `CONFIG_ZRAM_DEF_COMP` | `"lz4"` |
 | `CONFIG_SYSVIPC` | y |
@@ -381,7 +381,7 @@ PFRA 换页时会被查询——它改变的是运行时决策，不是诊断输
 |---|---|---|---|---|
 | `CONFIG_KSU` | y | | `CONFIG_SYSVIPC` | y |
 | `CONFIG_KSU_SUSFS` | y | | `CONFIG_POSIX_MQUEUE` | y |
-| `CONFIG_HZ` | 300 | | `CONFIG_IPC_NS` | y |
+| `CONFIG_HZ` | 250（可选 100/250/300/1000） | | `CONFIG_IPC_NS` | y |
 | `CONFIG_LTO_CLANG_THIN` | y | | `CONFIG_PID_NS` | y |
 | `CONFIG_CFI_CLANG` | y | | `CONFIG_DEVTMPFS` | y |
 | `CONFIG_ZRAM_DEF_COMP` | `"lz4"` | | `CONFIG_ANDROID_KABI_RESERVE` | y |
@@ -441,7 +441,7 @@ GKI-only 构建里没有是**正常形态**。另有 503 项是这些模块的�
 | 3 | `SYSVIPC` `POSIX_MQUEUE` `IPC_NS` `USER_NS` `PID_NS` `TMPFS_POSIX_ACL` | **y** | **n** | 低 |
 | 4 | `DEVTMPFS`（`DEVTMPFS_MOUNT=n`，不会自动挂载） | **y** | **n** | 低 |
 | 5 | `MODULE_SIG_ALL`（`MODULE_SIG_FORCE=n`） | **y** | **n** | 低 |
-| 6 | `HZ` | 300 | 250 | 无 |
+| 6 | `HZ` | 250（默认，可选 100/300/1000） | 250 | 无（默认与官方一致） |
 | 7 | `ZRAM_DEF_COMP` | lz4 | lzo-rle | 无 |
 | 8 | 调试裁剪（UBSAN 等） | ~~off~~ **已删除** | on | — |
 
@@ -1036,7 +1036,7 @@ fi
 
 ```
  AUTOFDO_CLANG n -> y
- HZ 250 -> 300            HZ_250 y -> n            HZ_300 n -> y
+ HZ 250 -> 250（或动态可选 100/300/1000）
  LTO_CLANG_THIN n -> y    LTO_NONE y -> n          +LTO y   +LTO_CLANG y
  TCP_CONG_BBR3 n -> y     DEFAULT_BBR3 n -> y      DEFAULT_TCP_CONG "cubic" -> "bbr3"
  NTSYNC n -> y
@@ -1050,7 +1050,8 @@ fi
 > 2. **ZSTD v1.5.7 与负压缩级别**：升级官方 upstream v1.5.7，并在 `crypto/zstd.c` 默认启用 `-1`（`--fast=1` 极速模式），支持 `/sys/module/zstd/parameters/level` 运行时动态调节；
 > 3. **I/O 调度器**：`block/elevator.c` 默认采用 `none`，UFS 4.0 硬件直通并发，消除软件电梯锁争用；
 > 4. **NoMount 内存级路径重定向**：支持可选开关，采用 CI 动态注入机制，零源码污染，自动跟进上游；
-> 5. **编译器升级**：基于 Google 官方 `main-kernel` 分支的最新 `clang-r614150`。
+> 5. **编译器升级**：基于 Google 官方 `main-kernel` 分支的最新 `clang-r614150`；
+> 6. **时钟中断频率 (HZ)**：默认采用 250Hz（兼顾日常续航能效与高响应，与官方一致），CI 支持手动选择 100 / 250 / 300 / 1000，运行时动态生成 fragment 注入，彻底规避配置 choice 冲突。
 
 ### 容器兼容（Droidspaces）
 
