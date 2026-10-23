@@ -118,7 +118,7 @@ on:
         type: boolean
         default: false
       ksu_ref:
-        description: "BakaSU ref: branch, tag, or commit SHA. Pinned to a commit before 48fa4bb7 because upstream suspended the SUSFS build there"
+        description: "BakaSU ref: branch, tag, or commit SHA. Pinned before 48fa4bb7 for SUSFS; without SUSFS, main is supported"
         type: string
         default: "5b76b884c75f729a220bb317aa4a4fc78f0e0e9c"
       enable_nomount:
@@ -441,8 +441,13 @@ jobs:
             # Match the make function itself, not the word. A plain
             # grep for 'error' would also fire on a comment mentioning
             # error handling, which would block a perfectly good build.
-            if grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
-              echo "::error::BakaSU $KSU_SHA suspends the SUSFS build via susfs_compat.mk. Pin ksu_ref to a commit before 48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73."
+            #
+            # Only gate on this if SUSFS is enabled: susfs_compat.mk is only
+            # included by KernelSU/kernel/Kbuild under `ifdef CONFIG_KSU_SUSFS`.
+            # When SUSFS is disabled, BakaSU uses the stock GKI tracepoint hook
+            # and builds cleanly even against main.
+            if [ "${{ inputs.enable_susfs }}" = "true" ] && grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
+              echo "::error::BakaSU $KSU_SHA suspends the SUSFS build via susfs_compat.mk. Pin ksu_ref to a commit before 48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73, or disable SUSFS."
               echo "KSU_STATUS=BROKEN ($KSU_SHA, susfs build suspended upstream)" >> $GITHUB_ENV
               exit 1
             fi

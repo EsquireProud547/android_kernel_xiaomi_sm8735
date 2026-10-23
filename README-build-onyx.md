@@ -968,12 +968,13 @@ $(info -- $(REPO_NAME): Please wait simonpunk update)
 $(error Please wait susfs update.)
 ```
 
-`kernel/Kbuild:189` 会 `include` 这个文件，而 `$(error)` 是 make 的
-**无条件致命错误**——整个构建在编译第一个 .o 之前就停掉。
+`kernel/Kbuild` 会在 `ifdef CONFIG_KSU_SUSFS` 条件下 `include` 这个文件，而 `$(error)` 是 make 的
+**无条件致命错误**——在开启 SUSFS 时会导致整个构建在编译第一个 .o 之前就停掉。
 作者的解释是 SUSFS 尚未同步最新 KernelSU，会被 `selinux_hide` 大量检测到。
 
 实测当前 `main`（`f6cb7e70`，2026-10-11）**仍然带着这行**，
-所以跟踪分支头 today 一定失败。
+所以在开启 SUSFS 情况下，跟踪分支头 today 一定失败。
+但在**关闭 SUSFS** 情况下，Kbuild 采用默认的 `CONFIG_KSU_TRACEPOINT_HOOK`，根本不会 `include` 该文件，使用 `main` 是完全正常的。
 
 ### 实现
 
@@ -994,24 +995,25 @@ $(error Please wait susfs update.)
 - 该 commit 的 `kernel/Kconfig` 仍有全部 10 个 `config KSU_SUSFS*`
 - 实测走完脚本的完整序列（`clone` → `stash` → `pull` → `checkout <SHA>`）成功
 
-### 守卫
+### 守卫（精准放行非 SUSFS 构建）
 
-「ref 能解析出来」不等于「它能编译」。所以步骤里加了一次检查：
+「ref 能解析出来」不等于「它能编译」。所以步骤里加了一次检查，且**仅在启用 SUSFS 时触发**（避免误伤不启用 SUSFS 但想用最新 main 的构建）：
 
 ```bash
-if grep -q 'error' KernelSU/kernel/tools/susfs_compat.mk; then
+if [ "${{ inputs.enable_susfs }}" = "true" ] && grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
   echo "::error::BakaSU $KSU_SHA suspends the SUSFS build ..."
   exit 1
 fi
 ```
 
-三种情况实测：
+实测场景：
 
-| ref | 结果 |
+| 组合 | 结果 |
 |---|---|
-| `5b76b884`（默认） | 通过 |
-| `48fa4bb7`（破坏点） | **拦住** |
-| `main`（当前） | **拦住** |
+| 启用 SUSFS + `5b76b884`（默认） | 通过 |
+| 启用 SUSFS + `48fa4bb7`（破坏点） | **拦住**（保护避免 20 分钟后无谓报错） |
+| 启用 SUSFS + `main`（当前） | **拦住** |
+| **关闭 SUSFS + `main`** | **通过**（正常走 Tracepoint Hook 构建，不再误伤） |
 
 也就是说，即使将来有人把默认值改回 `main`，也会在这一步得到一行明确的
 错误，而不是 20 分钟后一个看不出原因的内核构建失败。
