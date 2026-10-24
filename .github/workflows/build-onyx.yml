@@ -118,9 +118,9 @@ on:
         type: boolean
         default: false
       ksu_ref:
-        description: "BakaSU ref: branch, tag, or commit SHA. Pinned before 48fa4bb7 for SUSFS; without SUSFS, main is supported"
+        description: "BakaSU ref: branch, tag, or commit SHA"
         type: string
-        default: "5b76b884c75f729a220bb317aa4a4fc78f0e0e9c"
+        default: "main"
       enable_nomount:
         description: "Enable NoMount (VFS path redirection & virtual file injection)"
         type: boolean
@@ -412,45 +412,15 @@ jobs:
           #
           # ksu_ref takes a branch, a tag, or a full commit SHA. setup.sh
           # documents its first argument as "<commit-or-tag>" and passes it
-          # straight to `git checkout`, so pinning is the intended interface,
-          # not a workaround.
-          #
-          # Pinning is currently REQUIRED. Commit
-          # 48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73 (2026-10-10, "kernel:
-          # suspend susfs build") appends this to
-          # kernel/tools/susfs_compat.mk:
-          #
-          #     $(error Please wait susfs update.)
-          #
-          # and kernel/Kbuild:189 includes that file. An unconditional make
-          # error stops the build before anything is compiled, for anyone
-          # building with SUSFS. A ref at or after that commit is unusable;
-          # anything before it is fine.
+          # straight to `git checkout`.
           KSU_REF="${{ inputs.ksu_ref != '' && inputs.ksu_ref || 'main' }}"
           echo "Applying BakaSU (ref: $KSU_REF)..."
           if curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" \
                | bash -s -- "$KSU_REF"; then
             # setup.sh prints nothing useful for a detached-HEAD checkout, so
-            # record what actually landed. "applied (main)" is not evidence
-            # of anything when the whole point is pinning.
+            # record what actually landed.
             KSU_SHA=$(git -C KernelSU rev-parse --short HEAD 2>/dev/null || echo unknown)
             echo "  BakaSU resolved to: $KSU_SHA"
-            # A ref that resolves is not proof it builds. Checking the one
-            # file upstream uses to halt the build turns a 20-minute failure
-            # with no obvious cause into one clear line here.
-            # Match the make function itself, not the word. A plain
-            # grep for 'error' would also fire on a comment mentioning
-            # error handling, which would block a perfectly good build.
-            #
-            # Only gate on this if SUSFS is enabled: susfs_compat.mk is only
-            # included by KernelSU/kernel/Kbuild under `ifdef CONFIG_KSU_SUSFS`.
-            # When SUSFS is disabled, BakaSU uses the stock GKI tracepoint hook
-            # and builds cleanly even against main.
-            if [ "${{ inputs.enable_susfs }}" = "true" ] && grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
-              echo "::error::BakaSU $KSU_SHA suspends the SUSFS build via susfs_compat.mk. Pin ksu_ref to a commit before 48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73, or disable SUSFS."
-              echo "KSU_STATUS=BROKEN ($KSU_SHA, susfs build suspended upstream)" >> $GITHUB_ENV
-              exit 1
-            fi
             echo "KSU_STATUS=applied ($KSU_REF @ $KSU_SHA)" >> $GITHUB_ENV
           else
             echo "KSU_STATUS=FAILED ($KSU_REF)" >> $GITHUB_ENV

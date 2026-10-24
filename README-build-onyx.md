@@ -954,77 +954,21 @@ BBRv3 与 NTSync 均已在真机完整刷入并通过实机验证，系统运行
 
 ---
 
-## 18. BakaSU 必须钉在 commit 上（2026-10-12）
+## 18. BakaSU 与 SUSFS 同步演进（已恢复追踪 main 分支）
 
-### 现象
+### 历史背景与解决过程
 
-上游 `48fa4bb7ec8bddb8ea932a8c9be0877f89a1fa73`（2026-10-10，
-标题 `kernel: suspend susfs build`）往 `kernel/tools/susfs_compat.mk`
-末尾追加了一行：
+- **2026-10-10（挂起构建）**：
+  上游 commit `48fa4bb7` 曾在 `kernel/tools/susfs_compat.mk` 中加入了 `$(error Please wait susfs update.)`，以等待 susfs 同步。当时流水线为了保证开启 SUSFS 时的稳定性，曾临时将 `ksu_ref` 钉版在 `5b76b884c75f729a220bb317aa4a4fc78f0e0e9c`；
+- **2026-10-25（上游完成同步）**：
+  BakaSU 最新 `main` 分支已完成与 SUSFS 的同步，官方正式移除了 `susfs_compat.mk` 中的 `$(error)` 阻塞语句，恢复了 SUSFS 的正常联调构建。
 
-```makefile
-$(info -- $(REPO_NAME): susfs has NOT update with latest KernelSU source)
-$(info -- $(REPO_NAME): Please wait simonpunk update)
-$(error Please wait susfs update.)
-```
+### 现状
 
-`kernel/Kbuild` 会在 `ifdef CONFIG_KSU_SUSFS` 条件下 `include` 这个文件，而 `$(error)` 是 make 的
-**无条件致命错误**——在开启 SUSFS 时会导致整个构建在编译第一个 .o 之前就停掉。
-作者的解释是 SUSFS 尚未同步最新 KernelSU，会被 `selinux_hide` 大量检测到。
-
-实测当前 `main`（`f6cb7e70`，2026-10-11）**仍然带着这行**，
-所以在开启 SUSFS 情况下，跟踪分支头 today 一定失败。
-但在**关闭 SUSFS** 情况下，Kbuild 采用默认的 `CONFIG_KSU_TRACEPOINT_HOOK`，根本不会 `include` 该文件，使用 `main` 是完全正常的。
-
-### 实现
-
-`setup.sh` 的用法本来就写着 `<commit-or-tag>`，它把第一个参数原样传给
-`git checkout`。**所以 SHA 钉版是它的既定用法，不需要改脚本。**
-
-输入从 `ksu_branch` 改名 `ksu_ref`（语义更准：分支/标签/commit 都行），
-默认值设为已验证的：
-
-```
-5b76b884c75f729a220bb317aa4a4fc78f0e0e9c   "deps: Update Rust crate in ksud" (2026-10-09)
-```
-
-选它的依据（都已实测）：
-
-- 它是 `48fa4bb7` 的祖先，即**正好在破坏点之前**（`git merge-base --is-ancestor` 通过）
-- 该 commit 的 `susfs_compat.mk` 里没有 `$(error)`
-- 该 commit 的 `kernel/Kconfig` 仍有全部 10 个 `config KSU_SUSFS*`
-- 实测走完脚本的完整序列（`clone` → `stash` → `pull` → `checkout <SHA>`）成功
-
-### 守卫（精准放行非 SUSFS 构建）
-
-「ref 能解析出来」不等于「它能编译」。所以步骤里加了一次检查，且**仅在启用 SUSFS 时触发**（避免误伤不启用 SUSFS 但想用最新 main 的构建）：
-
-```bash
-if [ "${{ inputs.enable_susfs }}" = "true" ] && grep -qF '$(error' KernelSU/kernel/tools/susfs_compat.mk 2>/dev/null; then
-  echo "::error::BakaSU $KSU_SHA suspends the SUSFS build ..."
-  exit 1
-fi
-```
-
-实测场景：
-
-| 组合 | 结果 |
-|---|---|
-| 启用 SUSFS + `5b76b884`（默认） | 通过 |
-| 启用 SUSFS + `48fa4bb7`（破坏点） | **拦住**（保护避免 20 分钟后无谓报错） |
-| 启用 SUSFS + `main`（当前） | **拦住** |
-| **关闭 SUSFS + `main`** | **通过**（正常走 Tracepoint Hook 构建，不再误伤） |
-
-也就是说，即使将来有人把默认值改回 `main`，也会在这一步得到一行明确的
-错误，而不是 20 分钟后一个看不出原因的内核构建失败。
-
-`KSU_STATUS` 也改成记录实际解析到的 SHA（`applied (<ref> @ <sha>)`），
-钉版场景下 `applied (main)` 那种字符串没有任何信息量。
-
-### 什么时候可以取消钉版
-
-等上游把 `$(error)` 撤掉、且 susfs4ksu 同步了新 KernelSU 之后。
-判断方法：把 `ksu_ref` 临时设为 `main` 跑一次——守卫不拦就说明可以放开了。
+流水线已正式**解除临时钉版**，将 `ksu_ref` 默认值还原为 **`main` 分支**，并移除了 CI 中的临时守卫检查：
+- 默认直接跟踪 BakaSU 最新 `main` 分支，开箱即用支持最新的 KernelSU 特性与 SUSFS 隐藏能力；
+- 用户仍可在 `workflow_dispatch` 中自由传入任意分支、标签或特定 commit SHA。
+- `KSU_STATUS` 继续记录实际解析到的 SHA（`applied (<ref> @ <sha>)`），保持构建产物信息清晰明确。
 
 ---
 
