@@ -245,3 +245,19 @@ CONFIG_MACVLAN=y
 # without requiring any bootloader cmdline modifications (such as rcu_nocbs=all).
 CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y
 
+# --- Security & Sandboxing Hardening ---------------------------------------
+# Completes Landlock LSM support already declared in CONFIG_LSM. Enables
+# unprivileged sandboxing for Droidspaces containers and WebView isolation
+# without breaking GKI kABI.
+CONFIG_SECURITY_LANDLOCK=y
+
+# Disables unprivileged BPF by default (sets /proc/sys/kernel/unprivileged_bpf_disabled
+# to 2 at boot), mitigating BPF JIT spraying and side-channel attack vectors.
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+
+# --- Power-efficient Workqueues -------------------------------------------
+# Automatically routes unbound workqueues marked with WQ_POWER_EFFICIENT
+# (periodic networking, thermal/devfreq polling, timers) to power-efficient
+# CPU clusters (Cluster 0) rather than waking up high-frequency cores.
+CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
+
