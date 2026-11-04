@@ -2,7 +2,7 @@
 ## Upstream: osm0sis @ https://github.com/osm0sis/AnyKernel3
 ##         @ 020dfec (2026-09-04)
 ##
-## Xiaomi SM8735 (onyx) GKI 6.6.82 -- Capybara tuning.
+## Xiaomi REDMI Turbo 4 Pro / POCO F7 (SM8735 onyx) GKI 6.6.142 -- Capybara tuning.
 ##
 ## NOTE on variables: ak3-core.sh at 020dfec only reads UPPERCASE names
 ## (BLOCK, IS_SLOT_DEVICE, RAMDISK_COMPRESSION, PATCH_VBMETA_FLAG,

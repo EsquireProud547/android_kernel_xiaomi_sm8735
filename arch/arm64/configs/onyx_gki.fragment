@@ -1,7 +1,7 @@
 #
 # onyx_gki.fragment - Capybara tuning layered onto the stock Android GKI base
 #
-# Tree: seventeen @ 6.6.142 (Xiaomi SM8735 / onyx). Migrated from the
+# Tree: seventeen @ 6.6.142 (Xiaomi REDMI Turbo 4 Pro / POCO F7 - SM8735 onyx). Migrated from the
 # kernel_xiaomi_sm8735 tree, which is android15-6.6 @ 6.6.82. Every symbol
 # below was re-verified to exist in this tree's Kconfig on 6.6.142.
 #

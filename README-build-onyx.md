@@ -3,7 +3,7 @@
 本文记录本仓库 `.github/workflows/build-onyx.yml` 的实现。
 
 - **树**：`seventeen` @ `6.6.142`，远端唯一分支就是 `seventeen`
-- **设备**：Xiaomi SM8735（onyx），Oryon 平台，仅 aarch64
+- **设备**：REDMI Turbo 4 Pro / POCO F7（Xiaomi SM8735 onyx），ARMv9.2-A 全大核架构，仅 aarch64
 - **来源**：从 `kernel_xiaomi_sm8735`（`oss` @ `6.6.82`）整套迁移而来
 
 `anykernel/AK3-NOTES.md` 记录 AnyKernel3 打包注意事项，**改 `tools/` 前必读**。
@@ -1123,14 +1123,14 @@ CONFIG_MODULE_SIG_PROTECT=y
 Android 设备在日常息屏待机或轻负载时，系统各子系统（网络套接字释放、VFS 缓存逐出、IPC 句柄销毁等）会极其频繁地注册短命的 `kfree_rcu()` 和普通 RCU 回调。
 在原生 RCU 机制下，内核必须为这些回调频繁驱动 RCU 宽限期（Grace Period）状态机并唤醒各 CPU 核心，导致 CPU 难以长时间维持在深度 C-State 睡眠状态，造成息屏功耗浪费。
 
-Google 工程师 Joel Fernandes 为 Android 引入了 **RCU Lazy** 机制（[`CONFIG_RCU_LAZY=y`](file:///home/linggou/dswork/newwork/android_kernel_xiaomi_sm8735/kernel/rcu/Kconfig)）：
+Google 工程师 Joel Fernandes 为 Android 引入了 **RCU Lazy** 机制（[`CONFIG_RCU_LAZY=y`](kernel/rcu/Kconfig)）：
 - 将无强同步依赖、非紧急的 RCU 回调延迟批量排队（进入 `nocb_bypass` 队列），最长聚批延迟可达数秒（`RCU_LAZY_GP_DELAY`，默认约 5~10 秒）。
 - 当系统处于非空闲状态、或遇到显式屏障（`synchronize_rcu()`）、或内存紧张时，立即唤醒并刷新批处理队列。
-- 在小米 15（SM8735 onyx，16GB 运行内存）设备上，延迟回收带来的内存驻留微乎其微（通常仅数 MB），但能大幅消除 CPU 无效唤醒，息屏待机续航收益显著。
+- 在 REDMI Turbo 4 Pro / POCO F7（SM8735 onyx，16GB 运行内存）设备上，延迟回收带来的内存驻留微乎其微（通常仅数 MB），但能大幅消除全大核 CPU 无效唤醒，息屏待机续航收益显著。
 
 ### 硬性依赖：NOCB 全 CPU 卸载（`CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y`）
 
-RCU Lazy 的批处理机制在内核底层（[`kernel/rcu/tree_nocb.h`](file:///home/linggou/dswork/newwork/android_kernel_xiaomi_sm8735/kernel/rcu/tree_nocb.h)）中**严格绑定于 RCU No-CBs（NOCB）旁路链表**。
+RCU Lazy 的批处理机制在内核底层（[`kernel/rcu/tree_nocb.h`](kernel/rcu/tree_nocb.h)）中**严格绑定于 RCU No-CBs（NOCB）旁路链表**。
 - 如果目标 CPU 核心未处于 NOCB offload 状态，RCU 回调将直接在本地 CPU 的软中断（`rcu_core`）上下文中立即处理，RCU Lazy 逻辑会被内核旁路而**彻底静默失效**。
 - 为了实现「内核刷入后全自动生效，不需要任何 bootloader cmdline（如 `rcu_nocbs=all`）配合」，我们在 [`arch/arm64/configs/onyx_gki.fragment`](arch/arm64/configs/onyx_gki.fragment) 中启用了：
   ```kconfig
@@ -1169,7 +1169,7 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 
 ## 22. 构建选项精简：AutoFDO 与 ThinLTO 固化默认开启
 
-在 Xiaomi 15（SM8735 onyx）上，经过前期实机测试与 bisect 验证：
+在 REDMI Turbo 4 Pro / POCO F7（SM8735 onyx）上，经过前期实机测试与 bisect 验证：
 - **ThinLTO**：已充分验证能在该机型上正常引导开机，且减小内核镜像体积、优化跨函数调用内联；
 - **AutoFDO**：树内自带采自 Android 15 / 6.6.129 权威运行采样的 `android/gki/aarch64/afdo/kernel.afdo`，代码布局优化明显；
 
@@ -1234,7 +1234,7 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
 
 ### 1. 硬件特性与调优背景
 
-小米 15（SM8735 onyx）全系标配 **UFS 4.0** 极速闪存存储：
+REDMI Turbo 4 Pro / POCO F7（SM8735 onyx）标配 **UFS 4.0** 极速闪存存储：
 - **物理接口带宽翻倍**：基于 MIPI M-PHY v5.0 与 UniPro v2.0 规范，双通道最高理论带宽高达 **46.4 Gbps（~4.6 GB/s）**；
 - **深度硬件命令队列（Command Queuing）**：UFS 4.0 控制器原生支持极深的命令队列与全双工独立通道并发处理。
 
@@ -1293,7 +1293,7 @@ static bool enable_rcu_lazy __read_mostly = !IS_ENABLED(CONFIG_RCU_LAZY_DEFAULT_
   启动阶段 dmesg 连续刷出 83 次相同的错误提示：
   `sih_acquire_prepare_res:reset gpio request failed, ret = -16`（`-EBUSY`）
 - **根因分析**：
-  小米 15 硬件上搭载了一供艾为 `aw86927` 马达，其在早期 probe 中已成功申请并独占了对应的 GPIO 控制引脚。作为第二供应商备选方案的 `sih_haptic` 驱动在 probe 申请 GPIO 时必然因资源被占而返回 `-EBUSY`（-16）。然而原生驱动错误地编写了：
+  REDMI Turbo 4 Pro / POCO F7 硬件上搭载了一供艾为 `aw86927` 马达，其在早期 probe 中已成功申请并独占了对应的 GPIO 控制引脚。作为第二供应商备选方案的 `sih_haptic` 驱动在 probe 申请 GPIO 时必然因资源被占而返回 `-EBUSY`（-16）。然而原生驱动错误地编写了：
   ```c
   if (ret == -EBUSY)
       ret = -EPROBE_DEFER;

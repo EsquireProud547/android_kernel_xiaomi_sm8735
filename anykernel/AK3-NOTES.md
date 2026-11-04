@@ -1,5 +1,5 @@
-AnyKernel3 for Xiaomi SM8735 (onyx)
-==================================
+AnyKernel3 for Xiaomi REDMI Turbo 4 Pro / POCO F7 (SM8735 onyx)
+================================================================
 
 Scripts: upstream osm0sis/AnyKernel3 @ 020dfec (2026-09-04)
 Binaries: aarch64 builds
@@ -24,7 +24,8 @@ Upstream's repository ships **ARM (32-bit)** builds only. From its README:
 Running `git pull` / copying tools/ from upstream master therefore replaces the
 aarch64 binaries with 32-bit ARM ones. That happened once and broke flashing:
 
-  * SM8735 is an Oryon-based SoC and does not execute AArch32 code, so every
+  * SM8735 is an ARMv9.2-A SoC (Cortex-X4 + Cortex-A720 all-big-core) and does not
+    execute AArch32 code (EL0 AArch32 dropped in hardware), so every
     binary in tools/ fails with "exec format error".
   * The failure is not subtle under KernelSU managers. BakaSU's built-in AK3
     flasher (userspace/ksud/src/anykernel3.rs) injects

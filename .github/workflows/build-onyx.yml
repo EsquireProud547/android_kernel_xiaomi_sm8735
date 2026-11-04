@@ -722,8 +722,8 @@ jobs:
           #                redistribution and the license of the AK3 scripts"
           #
           # Do NOT let the tools/ binaries be replaced from upstream AnyKernel3
-          # master: it only ships 32-bit ARM, and SM8735 (Oryon) does not
-          # execute AArch32. See anykernel/AK3-NOTES.md.
+          # master: it only ships 32-bit ARM, and SM8735 (ARMv9.2-A Cortex-X4/A720) does not
+          # execute AArch32 (EL0 AArch32 dropped in hardware). See anykernel/AK3-NOTES.md.
           zip -r9 "../$ZIP_NAME" ./* -x '*.md' '*placeholder'
           cd ..
 
