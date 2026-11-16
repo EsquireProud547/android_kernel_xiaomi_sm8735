@@ -33,11 +33,7 @@ build-timestamp = $(or $(KBUILD_BUILD_TIMESTAMP), $(build-timestamp-auto))
 
 # Maximum length of UTS_VERSION is 64 chars
 filechk_uts_version = \
-	utsver=$$(if [ -n "$(KBUILD_BUILD_UTS_VERSION)" ]; then \
-		echo "$(KBUILD_BUILD_UTS_VERSION)"; \
-	else \
-		echo '$(pound)'"$(build-version)" $(smp-flag-y) $(preempt-flag-y) "$(build-timestamp)"; \
-	fi | cut -b -64); \
+	utsver=$$(echo $(if $(KBUILD_BUILD_UTS_VERSION),"$(KBUILD_BUILD_UTS_VERSION)",'$(pound)'"$(build-version)" $(smp-flag-y) $(preempt-flag-y) "$(build-timestamp)") | cut -b -64); \
 	echo '$(pound)'define UTS_VERSION \""$${utsver}"\"
 
 #
