@@ -16,6 +16,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/xarray.h>
 #if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER_V1)
 #include "hwkm_v1.h"
 #endif
@@ -24,6 +25,9 @@
 
 #include <soc/qcom/ice.h>
 #include <linux/qtee_shmbridge.h>
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+#include <linux/tme_hwkm_master.h>
+#endif
 
 #define AES_256_XTS_KEY_SIZE			64
 
@@ -46,12 +50,18 @@
 #define QTI_HWKM_ICE_RG_IPCAT_VERSION			0x0000
 #define QCOM_ICE_REG_HWKM_TZ_KM_CTL			0x1000
 #define QCOM_ICE_REG_HWKM_TZ_KM_STATUS			0x1004
+#define QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL		0x101C
+#define QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_STATUS		0x1020
 #define QCOM_ICE_REG_HWKM_BANK0_BANKN_IRQ_STATUS	0x2008
 #define QCOM_ICE_REG_HWKM_BANK0_BBAC_0			0x5000
 #define QCOM_ICE_REG_HWKM_BANK0_BBAC_1			0x5004
 #define QCOM_ICE_REG_HWKM_BANK0_BBAC_2			0x5008
 #define QCOM_ICE_REG_HWKM_BANK0_BBAC_3			0x500C
 #define QCOM_ICE_REG_HWKM_BANK0_BBAC_4			0x5010
+
+#define QCOM_ICE_HWKM_TPKEY_EN				BIT(8)
+#define QCOM_ICE_HWKM_ICE_SLAVE_TPKEY_VAL		0x18C
+#define QCOM_ICE_HWKM_TPKEY_MAX_RETRIES			1000
 
 /* QCOM ICE HWKM BIST vals */
 #define QCOM_ICE_HWKM_BIST_DONE_V1_VAL		0x14007
@@ -99,6 +109,9 @@ union crypto_cfg {
 		u8 cfge;
 	};
 };
+
+static DEFINE_XARRAY(ice_handles);
+static DEFINE_MUTEX(ice_mutex);
 
 static bool qcom_ice_check_supported(struct qcom_ice *ice)
 {
@@ -343,6 +356,64 @@ static int translate_hwkm_slot(struct qcom_ice *ice, int slot)
 }
 
 #if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI) || IS_ENABLED(CONFIG_MMC_CRYPTO_QTI)
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+static bool qcom_ice_is_tpkey_set(struct qcom_ice *ice)
+{
+	u32 val;
+
+	val = qcom_ice_readl(ice,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_STATUS));
+
+	return ((val >> 8) == 0x1);
+}
+
+static int qcom_ice_set_tpkey(struct qcom_ice *ice)
+{
+	struct tme_ext_err_info errinfo = {0};
+	int status;
+	int retries = 0;
+	u32 val;
+
+	val = qcom_ice_readl(ice,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL));
+	val &= ~QCOM_ICE_HWKM_TPKEY_EN;
+	qcom_ice_writel(ice, val,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL));
+	wmb();
+	qcom_ice_writel(ice, QCOM_ICE_HWKM_ICE_SLAVE_TPKEY_VAL,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL));
+	wmb();
+
+	status = tme_hwkm_master_broadcast_transportkey(&errinfo);
+	while ((status == -ENODEV || status == -EAGAIN) &&
+	       retries < QCOM_ICE_HWKM_TPKEY_MAX_RETRIES) {
+		usleep_range(8000, 12000);
+		status = tme_hwkm_master_broadcast_transportkey(&errinfo);
+		retries++;
+	}
+
+	val = qcom_ice_readl(ice,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL));
+	val &= ~QCOM_ICE_HWKM_TPKEY_EN;
+	qcom_ice_writel(ice, val,
+		HWKM_OFFSET(QCOM_ICE_REG_HWKM_TPKEY_RECEIVE_CTL));
+	wmb();
+
+	if (status) {
+		dev_err(ice->dev,
+			"HWKM transport key broadcast failed: %d\n", status);
+		return status;
+	}
+
+	if (!qcom_ice_is_tpkey_set(ice)) {
+		dev_err(ice->dev, "HWKM transport key not latched by ICE\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+#endif
+
 static int qcom_ice_program_wrapped_key(struct qcom_ice *ice,
 					const struct blk_crypto_key *key,
 					u8 data_unit_size, int slot)
@@ -365,6 +436,14 @@ static int qcom_ice_program_wrapped_key(struct qcom_ice *ice,
 	}
 
 	return err;
+#endif
+
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+	if (ice->use_hwkm && !qcom_ice_is_tpkey_set(ice)) {
+		err = qcom_ice_set_tpkey(ice);
+		if (err)
+			return err;
+	}
 #endif
 
 	memset(&cfg, 0, sizeof(cfg));
@@ -399,6 +478,7 @@ static int qcom_ice_program_wrapped_key(struct qcom_ice *ice,
 	if (err) {
 		pr_err("%s:SCM call Error: 0x%x slot %d\n", __func__, err,
 		       slot);
+		qtee_shmbridge_free_shm(&shm);
 		return err;
 	}
 
@@ -648,6 +728,8 @@ struct qcom_ice *of_qcom_ice_get(struct device *dev)
 		return qcom_ice_create(&pdev->dev, base);
 	}
 
+	guard(mutex)(&ice_mutex);
+
 	/*
 	 * If the consumer node does not provider an 'ice' reg range
 	 * (legacy DT binding), then it must at least provide a phandle
@@ -664,12 +746,11 @@ struct qcom_ice *of_qcom_ice_get(struct device *dev)
 		goto out;
 	}
 
-	ice = platform_get_drvdata(pdev);
-	if (!ice) {
-		dev_err(dev, "Cannot get ice instance from %s\n",
-			dev_name(&pdev->dev));
+	ice = xa_load(&ice_handles, pdev->dev.of_node->phandle);
+	if (IS_ERR_OR_NULL(ice)) {
 		platform_device_put(pdev);
-		ice = ERR_PTR(-EPROBE_DEFER);
+		if (!ice)
+			ice = ERR_PTR(-EPROBE_DEFER);
 		goto out;
 	}
 
@@ -738,22 +819,38 @@ EXPORT_SYMBOL_GPL(devm_of_qcom_ice_get);
 
 static int qcom_ice_probe(struct platform_device *pdev)
 {
+	unsigned long phandle = pdev->dev.of_node->phandle;
 	struct qcom_ice *engine;
 	void __iomem *base;
+
+	guard(mutex)(&ice_mutex);
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base)) {
 		dev_warn(&pdev->dev, "ICE registers not found\n");
+		/* Store the error pointer for devm_of_qcom_ice_get() */
+		xa_store(&ice_handles, phandle, (__force void *)base, GFP_KERNEL);
 		return PTR_ERR(base);
 	}
 
 	engine = qcom_ice_create(&pdev->dev, base);
-	if (IS_ERR(engine))
+	if (IS_ERR(engine)) {
+		/* Store the error pointer for devm_of_qcom_ice_get() */
+		xa_store(&ice_handles, phandle, engine, GFP_KERNEL);
 		return PTR_ERR(engine);
+	}
 
-	platform_set_drvdata(pdev, engine);
+	xa_store(&ice_handles, phandle, engine, GFP_KERNEL);
 
 	return 0;
+}
+
+static void qcom_ice_remove(struct platform_device *pdev)
+{
+	unsigned long phandle = pdev->dev.of_node->phandle;
+
+	guard(mutex)(&ice_mutex);
+	xa_store(&ice_handles, phandle, NULL, GFP_KERNEL);
 }
 
 static const struct of_device_id qcom_ice_of_match_table[] = {
@@ -764,6 +861,7 @@ MODULE_DEVICE_TABLE(of, qcom_ice_of_match_table);
 
 static struct platform_driver qcom_ice_driver = {
 	.probe	= qcom_ice_probe,
+	.remove_new	= qcom_ice_remove,
 	.driver = {
 		.name = "qcom-ice",
 		.of_match_table = qcom_ice_of_match_table,
