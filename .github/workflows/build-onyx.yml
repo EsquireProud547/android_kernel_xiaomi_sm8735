@@ -150,6 +150,18 @@ on:
         description: "Also put built .ko files into the zip under modules/ (not flashed)"
         type: boolean
         default: false
+      enable_spoof_uname:
+        description: "Spoof kernel build info & uname (version/release) to official GKI strings"
+        type: boolean
+        default: true
+      spoof_uname_release:
+        description: "Spoofed release (uname -r)"
+        type: string
+        default: "6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k"
+      spoof_uname_version:
+        description: "Spoofed version (uname -v)"
+        type: string
+        default: "#1 SMP PREEMPT Thu May 28 07:48:46 UTC 2026"
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -624,12 +636,28 @@ jobs:
 
           JOBS=$(nproc --all 2>/dev/null || echo 16)
 
+          MAKE_SPOOF_ARGS=""
+          if [ "${{ inputs.enable_spoof_uname }}" = "true" ]; then
+            SPOOF_RELEASE="${{ inputs.spoof_uname_release || '6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k' }}"
+            SPOOF_VERSION="${{ inputs.spoof_uname_version || '#1 SMP PREEMPT Thu May 28 07:48:46 UTC 2026' }}"
+            export KBUILD_BUILD_USER="android-build"
+            export KBUILD_BUILD_HOST="google.com"
+            export KBUILD_BUILD_UTS_VERSION="$SPOOF_VERSION"
+            MAKE_SPOOF_ARGS="KERNELRELEASE=$SPOOF_RELEASE KBUILD_BUILD_UTS_VERSION=\"$SPOOF_VERSION\""
+            echo "SPOOF_UNAME_STATUS=enabled ($SPOOF_RELEASE)" >> $GITHUB_ENV
+            echo "  [spoof-uname] release: $SPOOF_RELEASE"
+            echo "  [spoof-uname] version: $SPOOF_VERSION"
+            echo "  [spoof-uname] compile: android-build@google.com"
+          else
+            echo "SPOOF_UNAME_STATUS=disabled" >> $GITHUB_ENV
+          fi
+
           # PIPESTATUS[0] is make's real exit code. Without this, a pipeline
           # into tee always reports success -- and because arm64 builds Image
           # *after* modpost, a warm-cache re-run that has a stale Image in out/
           # would sail through the check below and claim SUCCESSFUL.
           set +e
-          make -j"$JOBS" O=out CC="ccache clang" LLVM=1 LLVM_IAS=1 KCFLAGS="-w" 2>&1 | tee build.log
+          make -j"$JOBS" O=out CC="ccache clang" LLVM=1 LLVM_IAS=1 KCFLAGS="-w" $MAKE_SPOOF_ARGS 2>&1 | tee build.log
           MAKE_RC=${PIPESTATUS[0]}
           set -e
           echo "make exit code: $MAKE_RC"
@@ -760,6 +788,7 @@ jobs:
           | **时钟频率** | ${{ env.HZ_STATUS || '250Hz' }} |
           | **Root 管理** | BakaSU: ${{ env.KSU_STATUS }} |
           | **隐蔽防护** | SUSFS: ${{ env.SUSFS_STATUS || 'disabled' }} |
+          | **信息伪装** | ${{ env.SPOOF_UNAME_STATUS || 'disabled' }} |
           | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |
           | **省电机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'disabled' }} (全核心 NOCB 卸载) |
           | **压缩引擎** | ZSTD v1.5.7 (默认启用负级别 -1 / 支持动态参数) |
