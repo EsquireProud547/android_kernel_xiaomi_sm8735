@@ -2,7 +2,7 @@
 ## Upstream: osm0sis @ https://github.com/osm0sis/AnyKernel3
 ##         @ 020dfec (2026-09-04)
 ##
-## Xiaomi REDMI Turbo 4 Pro / POCO F7 (SM8735 onyx) GKI 6.6.142 -- Capybara tuning.
+## Xiaomi REDMI Turbo 4 Pro / POCO F7 (SM8735 onyx) GKI 6.6.144 -- Capybara tuning.
 ##
 ## NOTE on variables: ak3-core.sh at 020dfec only reads UPPERCASE names
 ## (BLOCK, IS_SLOT_DEVICE, RAMDISK_COMPRESSION, PATCH_VBMETA_FLAG,
@@ -50,7 +50,16 @@ NO_MAGISK_CHECK=1;
 # the kernel in boot, so replacing just the kernel half is both correct and
 # much faster than unpacking and repacking the ramdisk. Everything else
 # takes the ordinary dump_boot/write_boot path.
-if [ -L "/dev/block/bootdevice/by-name/init_boot_a" -o -L "/dev/block/by-name/init_boot_a" ]; then
+INIT_BOOT_PART=""
+for _p in \
+  "/dev/block/bootdevice/by-name/init_boot$SLOT" \
+  "/dev/block/bootdevice/by-name/init_boot" \
+  "/dev/block/by-name/init_boot$SLOT" \
+  "/dev/block/by-name/init_boot"; do
+  if [ -e "$_p" ]; then INIT_BOOT_PART="$_p"; break; fi;
+done;
+if [ -n "$INIT_BOOT_PART" ]; then
+    ui_print "init_boot partition: $INIT_BOOT_PART"
     split_boot; # skip ramdisk unpack/repack on init_boot devices
     flash_boot; # repack only the kernel half
 else

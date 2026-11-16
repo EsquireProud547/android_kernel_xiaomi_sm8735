@@ -1425,6 +1425,7 @@ static void screen_state_check(struct work_struct *work)
 		queue_delayed_work(screen_state_wq, &screen_state_dw, 5 * HZ);
 	}
 #endif
+	of_node_put(node);
 #endif
 }
 

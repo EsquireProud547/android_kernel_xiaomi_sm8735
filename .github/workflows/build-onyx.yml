@@ -675,6 +675,14 @@ jobs:
             cp -v "$ZIMAGE_DIR/Image" "$TEMP_DIR/"
           fi
 
+          STAGED_IMAGE=$(cd "$TEMP_DIR" && ls -1 Image Image.gz Image.gz-dtb 2>/dev/null | head -1)
+          if [ -z "$STAGED_IMAGE" ]; then
+            echo "::error::no kernel image staged in $TEMP_DIR -- build produced none of Image, Image.gz, Image.gz-dtb"
+            ls -l "$ZIMAGE_DIR"/Image* 2>/dev/null || echo "(no Image* in $ZIMAGE_DIR at all)"
+            exit 1
+          fi
+          echo "Staged kernel image: $STAGED_IMAGE ($(du -h "$TEMP_DIR/$STAGED_IMAGE" | cut -f1))"
+
           if [ -d "$ZIMAGE_DIR/dts/vendor/qcom" ]; then
             mkdir -p "$TEMP_DIR/dtb"
             cp -v "$ZIMAGE_DIR"/dts/vendor/qcom/*.dtb "$TEMP_DIR/dtb/" 2>/dev/null || true

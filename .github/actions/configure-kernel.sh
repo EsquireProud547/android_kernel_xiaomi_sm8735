@@ -136,6 +136,7 @@ esac
 # modpost.
 VENDOR_BUILTIN=""
 if [ "$ENABLE_VENDOR_MODULES" = "true" ]; then
+  VENDOR_FRAGMENT="${VENDOR_FRAGMENT:-arch/arm64/configs/vendor/onyx_perf.config}"
   VENDOR_BUILTIN="vendor_builtin.fragment"
   echo "  filtering $VENDOR_FRAGMENT: keeping =y, dropping $(grep -cE '^CONFIG_[A-Za-z0-9_]+=m$' "$VENDOR_FRAGMENT") OEM =m modules"
   grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > "$VENDOR_BUILTIN" || true
@@ -372,7 +373,7 @@ if ! scripts/diffconfig "$MERGED_PATH" out/.config > "$MERGE_OUT"; then
   cat "$MERGE_OUT"
   exit 1
 fi
-DRIFT=$(grep -E '^-' "$MERGE_OUT" | grep -vE '^-[A-Za-z0-9_]+ n$' || true)
+DRIFT=$(grep -E '(^-|^ [A-Za-z0-9_]+ [ym] ->)' "$MERGE_OUT" | grep -vE '^-[A-Za-z0-9_]+ n$' || true)
 if [ -n "$DRIFT" ]; then
   echo "========================================================"
   echo "::error::Defconfig fragment did not apply as expected"

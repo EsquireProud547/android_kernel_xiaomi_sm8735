@@ -25,7 +25,7 @@ static int zstd_param_level_set(const char *val, const struct kernel_param *kp)
 	if (ret)
 		return ret;
 
-	if (level < zstd_min_clevel() || level > zstd_max_clevel())
+	if (level < zstd_min_clevel() || level > 3)
 		return -EINVAL;
 
 	*((int *)kp->arg) = level;
