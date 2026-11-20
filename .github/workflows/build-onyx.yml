@@ -67,8 +67,8 @@ name: Build Onyx Kernel
 #   * BBRv3 (default TCP congestion control)
 #   * NTSync (Windows NT sync primitive emulation)
 #   * Baseband-guard (firmware partition write protection)
-#   * ZSTD v1.5.7 upgrade with negative compression level (-1 default)
-#   * I/O scheduler none for UFS 4.0 hardware concurrency + F2FS tune
+#   * ZSTD v1.5.7 upgrade + ZRAM LZ4 default (4GB/s ultra-fast decompression)
+#   * I/O scheduler mq-deadline (500ms read timeout anti-starvation for UFS 4.0)
 #   * NoMount (dynamic in-RAM VFS redirection via CI setup.sh)
 #   * Clang-r614150 toolchain from upstream main-kernel branch
 #
@@ -88,80 +88,44 @@ env:
   CLANG_BRANCH: main-kernel
   VENDOR_FRAGMENT: arch/arm64/configs/vendor/onyx_perf.config
   KERNEL_CODENAME: Onyx
-  # susfs4ksu has no android17-6.6 branch; gki-android15-6.6 is its only 6.6
-  # branch, and it does apply to this tree. Deliberately NOT pinned to a
-  # commit: we always track the branch head so bug fixes upstream land without
-  # a commit here. The cost of that choice is that an upstream change could
-  # stop applying to 6.6.142 -- so the outcome is recorded in SUSFS_STATUS and
-  # gate 3 turns a lost CONFIG_KSU_SUSFS into a hard build failure. Loud, not
-  # silent, which is what matters.
-  #
-  # The susfs_dev input switches to gki-android15-6.6-dev. That branch has
-  # DIVERGED from this one rather than moved ahead of it: both contain the
-  # same functional work under different SHAs, dev having additionally synced
-  # with upstream KernelSU main as of 2026-10-12. Both carry the same patch
-  # file name and both apply to 6.6.142 with 19 hunks, 1 at fuzz 1 and no
-  # failures, so the switch is one variable. Neither reports a different
-  # SUSFS_VERSION; both say v2.3.0. See the SUSFS step for the details.
   SUSFS_BRANCH: gki-android15-6.6
-  SUSFS_BRANCH_DEV: gki-android15-6.6-dev
+  DEFAULT_SPOOF_RELEASE: "6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k"
+  DEFAULT_SPOOF_VERSION: "#1 SMP PREEMPT Thu May 28 07:48:46 UTC 2026"
 
 on:
   workflow_dispatch:
     inputs:
       enable_susfs:
-        description: "Enable SUSFS (hide root traces)"
+        description: "Enable SUSFS"
         type: boolean
         default: true
-      susfs_dev:
-        description: "Use susfs4ksu's gki-android15-6.6-dev branch instead of the stable one (fresher, less tested)"
-        type: boolean
-        default: false
       ksu_ref:
-        description: "BakaSU ref: branch, tag, or commit SHA"
+        description: "BakaSU ref"
         type: string
         default: "main"
       enable_nomount:
-        description: "Enable NoMount (VFS path redirection & virtual file injection)"
+        description: "Enable NoMount"
         type: boolean
         default: true
       nomount_ref:
-        description: "NoMount ref: branch (dev/master), tag, or commit SHA"
+        description: "NoMount ref"
         type: string
         default: "dev"
-      enable_vendor_modules:
-        description: "Merge the built-in (=y) entries of vendor/onyx_perf.config"
-        type: boolean
-        default: true
-      enable_btf:
-        description: "BTF for eBPF/CO-RE (needs pahole >= 1.21; auto-disabled if missing)"
-        type: boolean
-        default: true
       timer_hz:
-        description: "Kernel timer frequency HZ (250 default/balanced, 300 video-sync, 100 power-save, 1000 low-latency)"
+        description: "Timer HZ"
         type: choice
         options:
           - "250"
           - "300"
-          - "100"
-          - "1000"
         default: "250"
       bundle_modules:
-        description: "Also put built .ko files into the zip under modules/ (not flashed)"
+        description: "Bundle .ko modules in zip"
         type: boolean
         default: false
       enable_spoof_uname:
-        description: "Spoof kernel build info & uname (version/release) to official GKI strings"
+        description: "Spoof official GKI uname"
         type: boolean
         default: true
-      spoof_uname_release:
-        description: "Spoofed release (uname -r)"
-        type: string
-        default: "6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k"
-      spoof_uname_version:
-        description: "Spoofed version (uname -v)"
-        type: string
-        default: "#1 SMP PREEMPT Thu May 28 07:48:46 UTC 2026"
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -281,7 +245,6 @@ jobs:
             gcc g++ make device-tree-compiler python3
 
       - name: Install pahole for BTF
-        if: inputs.enable_btf
         run: |
           # CONFIG_DEBUG_INFO_BTF needs pahole to turn DWARF into BTF, and the
           # kernel Kconfig demands >= 1.21 because we build DWARF5
@@ -301,7 +264,6 @@ jobs:
           fi
 
       - name: Patch libbpf for modern host compilers
-        if: inputs.enable_btf
         run: |
           # CONFIG_DEBUG_INFO_BTF pulls in tools/bpf/resolve_btfids, which links
           # tools/lib/bpf. That code fails to build with a current host compiler
@@ -468,13 +430,7 @@ jobs:
           # If a future upstream commit stops applying, that is visible rather
           # than silent: SUSFS_STATUS is recorded, and gate 3 below fails the
           # build because CONFIG_KSU_SUSFS would be missing from out/.config.
-          if [ "${{ inputs.susfs_dev }}" = "true" ]; then
-            SUSFS_BRANCH="${{ env.SUSFS_BRANCH_DEV }}"
-            echo "  using the -dev branch (fresher, less tested)"
-          else
-            SUSFS_BRANCH="${{ env.SUSFS_BRANCH }}"
-            echo "  using the stable branch"
-          fi
+          SUSFS_BRANCH="${{ env.SUSFS_BRANCH }}"
           if git clone -q https://gitlab.com/simonpunk/susfs4ksu.git \
                -b "$SUSFS_BRANCH" --depth 1 susfs4ksu; then
             echo "  susfs4ksu $SUSFS_BRANCH @ $(git -C susfs4ksu rev-parse HEAD)"
@@ -566,15 +522,6 @@ jobs:
           patch -p1 --forward < .github/actions/ntsync_compat_android15-6.6.patch
           echo "NTSYNC_STATUS=applied" >> $GITHUB_ENV
 
-      - name: Apply F2FS min fsync blocks optimization
-        run: |
-          # F2FS min fsync blocks optimization:
-          # Raises DEF_MIN_FSYNC_BLOCKS from 8 to 20 to prevent excessive IPU writes
-          # and reduce frame drops during frequent SQLite transactions.
-          echo "Applying F2FS min fsync blocks optimization..."
-          patch -p1 --forward < .github/actions/f2fs_congestion_tune.patch
-          echo "F2FS_TUNE_STATUS=applied" >> $GITHUB_ENV
-
       - name: Apply Baseband-guard
         run: |
           # Baseband-guard: anti-formatting partition protector.
@@ -622,10 +569,10 @@ jobs:
         env:
           ENABLE_SUSFS: ${{ inputs.enable_susfs }}
           ENABLE_NOMOUNT: ${{ inputs.enable_nomount }}
-          ENABLE_VENDOR_MODULES: ${{ inputs.enable_vendor_modules }}
+          ENABLE_VENDOR_MODULES: "true"
           ENABLE_AUTOFDO: "true"
           ENABLE_THINLTO: "true"
-          ENABLE_BTF: ${{ inputs.enable_btf }}
+          ENABLE_BTF: "true"
           TIMER_HZ: ${{ inputs.timer_hz }}
         run: .github/actions/configure-kernel.sh
       - name: Build kernel
@@ -638,8 +585,8 @@ jobs:
 
           MAKE_ARGS=""
           if [ "${{ inputs.enable_spoof_uname }}" = "true" ]; then
-            SPOOF_RELEASE="${{ inputs.spoof_uname_release || '6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k' }}"
-            SPOOF_VERSION="${{ inputs.spoof_uname_version || '#1 SMP PREEMPT Thu May 28 07:48:46 UTC 2026' }}"
+            SPOOF_RELEASE="${{ env.DEFAULT_SPOOF_RELEASE }}"
+            SPOOF_VERSION="${{ env.DEFAULT_SPOOF_VERSION }}"
             export KERNELRELEASE="$SPOOF_RELEASE"
             export KBUILD_BUILD_USER="android-build"
             export KBUILD_BUILD_HOST="google.com"
@@ -791,11 +738,11 @@ jobs:
           | **隐蔽防护** | SUSFS: ${{ env.SUSFS_STATUS || 'disabled' }} |
           | **信息伪装** | ${{ env.SPOOF_UNAME_STATUS || 'disabled' }} |
           | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |
-          | **省电机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'disabled' }} (全核心 NOCB 卸载) |
-          | **压缩引擎** | ZSTD v1.5.7 (默认启用负级别 -1 / 支持动态参数) |
+          | **RCU 机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'stock' }} |
+          | **压缩引擎** | ZRAM LZ4 (极速同步解压) + ZSTD v1.5.7 (标准引擎) |
           | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
           | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
-          | **存储调度** | I/O: none (UFS 4.0 硬件直通) + F2FS DEF_MIN_FSYNC_BLOCKS=20 |
+          | **存储调度** | I/O: mq-deadline (UFS 读防饥饿防丢帧) + F2FS 原生 LFS |
           | **路径重定向** | NoMount: ${{ env.NOMOUNT_STATUS || 'disabled' }} (VFS 内存级虚拟文件注入) |
           | **容器支持** | Droidspaces: ${{ env.DROIDSPACES_STATUS }} |
           EOF

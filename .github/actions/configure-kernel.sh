@@ -266,7 +266,6 @@ echo "  [gate 1/3] no overridden values"
 #
 # Deliberate drops:
 # 1. UAPI_HEADER_TEST (developer only)
-# 2. RCU_LAZY_DEFAULT_OFF (we want enable_rcu_lazy=Y by default)
 OVERRIDE_ARGS=""
 
 if [ "$BTF_OFF" = "1" ]; then
@@ -287,13 +286,6 @@ fi
 # from it in a shipping kernel and it costs build time, so drop the
 # request rather than weakening the gate.
 OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_UAPI_HEADER_TEST"
-
-# RCU Lazy is compiled-in in the GKI base (CONFIG_RCU_LAZY=y), but
-# gki_defconfig line 23 sets CONFIG_RCU_LAZY_DEFAULT_OFF=y, leaving
-# rcutree.enable_rcu_lazy=N unless overridden via cmdline.
-# We drop CONFIG_RCU_LAZY_DEFAULT_OFF here so that enable_rcu_lazy
-# defaults to 'Y' (true) at boot without needing bootloader cmdline changes.
-OVERRIDE_ARGS="$OVERRIDE_ARGS -d CONFIG_RCU_LAZY_DEFAULT_OFF"
 
 if [ -n "$OVERRIDE_ARGS" ]; then
   # shellcheck disable=SC2086
@@ -459,6 +451,8 @@ fi
 if grep -q "^CONFIG_RCU_LAZY=y" out/.config && ! grep -q "^CONFIG_RCU_LAZY_DEFAULT_OFF=y" out/.config; then
   NOCB_ALL_VAL=$(grep -q '^CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y' out/.config && echo 'y' || echo 'n')
   echo "RCU_LAZY_STATUS=enabled (default ON, NOCB_ALL=$NOCB_ALL_VAL)" >> $GITHUB_ENV
+else
+  echo "RCU_LAZY_STATUS=stock (default OFF, ACK baseline)" >> $GITHUB_ENV
 fi
 
 echo "=== Key configs ==="

@@ -33,7 +33,8 @@
 #                                 value, so merge_config does not see an override
 #
 # AutoFDO, ThinLTO & Timer HZ are managed via build-time fragments.
-# ZRAM compression algorithm is deferred to userspace/KernelSU module.
+# ZRAM default compressor is set to LZ4 for ultra-fast page fault decompression.
+CONFIG_ZRAM_DEF_COMP_LZ4=y
 #
 
 # --- Timer frequency -------------------------------------------------------
@@ -236,15 +237,6 @@ CONFIG_MACVLAN=y
 # deliberately omits it from the kABI-tested set. Not added. Say so here rather
 # than leaving the gap unexplained.
 
-# --- RCU Lazy invocation & NOCB CPU offload --------------------------------
-# Enables full CPU offload for RCU callbacks across all CPUs by default.
-# RCU Lazy batching queue operates strictly on nocb_bypass lists. Without
-# offloading callback processing to kthreads, callbacks run in local softirqs
-# and RCU Lazy remains dormant.
-# Turning on CONFIG_RCU_NOCB_CPU_DEFAULT_ALL satisfies this requirement at boot
-# without requiring any bootloader cmdline modifications (such as rcu_nocbs=all).
-CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y
-
 # --- Security & Sandboxing Hardening ---------------------------------------
 # Completes Landlock LSM support already declared in CONFIG_LSM. Enables
 # unprivileged sandboxing for Droidspaces containers and WebView isolation
@@ -254,10 +246,4 @@ CONFIG_SECURITY_LANDLOCK=y
 # Disables unprivileged BPF by default (sets /proc/sys/kernel/unprivileged_bpf_disabled
 # to 2 at boot), mitigating BPF JIT spraying and side-channel attack vectors.
 CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
-
-# --- Power-efficient Workqueues -------------------------------------------
-# Automatically routes unbound workqueues marked with WQ_POWER_EFFICIENT
-# (periodic networking, thermal/devfreq polling, timers) to power-efficient
-# CPU clusters (Cluster 0) rather than waking up high-frequency cores.
-CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
 
