@@ -155,10 +155,12 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v7
         with:
-          # This repo's only branch is `seventeen` (origin/HEAD ->
-          # refs/heads/seventeen). The 6.6.82 tree used `oss`; do not copy that
-          # over.
-          ref: seventeen
+          # Build the branch the workflow was dispatched on (default
+          # origin/HEAD -> `seventeen`). Pinning `seventeen` here silently
+          # ignored the branch picker and built mainline even when the run was
+          # dispatched from a test branch; keep this as github.ref_name so a
+          # workflow_dispatch actually tests the code it was started from.
+          ref: ${{ github.ref_name }}
           # Shallow, and deliberately so. This repo has 1.26M commits and a
           # full fetch measured 5m22s, roughly 23% of the whole run.
           #
@@ -739,7 +741,7 @@ jobs:
           | **信息伪装** | ${{ env.SPOOF_UNAME_STATUS || 'disabled' }} |
           | **分区保护** | Baseband-guard: ${{ env.BBG_STATUS || 'disabled' }} |
           | **RCU 机制** | RCU Lazy: ${{ env.RCU_LAZY_STATUS || 'stock' }} |
-          | **压缩引擎** | ZRAM LZ4 (极速同步解压) + ZSTD v1.5.7 (标准引擎) |
+          | **压缩引擎** | ZRAM LZ4 (极速同步解压) + ZSTD v1.6.0 (标准引擎) |
           | **拥塞控制** | BBRv3 (默认拥塞控制算法) |
           | **游戏模拟** | NTSync: ${{ env.NTSYNC_STATUS || 'disabled' }} (`/dev/ntsync`) |
           | **存储调度** | I/O: mq-deadline (UFS 读防饥饿防丢帧) + F2FS 原生 LFS |
