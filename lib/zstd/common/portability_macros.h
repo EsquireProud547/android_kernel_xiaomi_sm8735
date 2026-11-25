@@ -71,6 +71,16 @@
 #endif
 
 /*
+ * The Linux kernel importer consumes the outer guard while preserving the
+ * distinction below. Normal x86 kernel objects can use the kernel CPU-feature
+ * policy, while preboot objects cannot use that infrastructure.
+ */
+#  if defined(__KERNEL__) && defined(CONFIG_X86) && \
+      !defined(__DISABLE_EXPORTS)
+#    define ZSTD_USE_KERNEL_CPU_FEATURES
+#  endif
+
+/*
  * Only enable assembly for GNU C compatible compilers,
  * because other platforms may not support GAS assembly syntax.
  *
@@ -113,6 +123,25 @@
 
 #ifndef ZSTD_CET_ENDBRANCH
 # define ZSTD_CET_ENDBRANCH
+#endif
+
+/*
+ * ZSTD_IS_DETERMINISTIC_BUILD must be set to 0 if any compilation macro is
+ * active that impacts the compressed output.
+ *
+ * NOTE: ZSTD_MULTITHREAD is allowed to be set or unset.
+ */
+#if defined(ZSTD_CLEVEL_DEFAULT) \
+    || defined(ZSTD_EXCLUDE_DFAST_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_GREEDY_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_LAZY_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_LAZY2_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_BTLAZY2_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_BTOPT_BLOCK_COMPRESSOR) \
+    || defined(ZSTD_EXCLUDE_BTULTRA_BLOCK_COMPRESSOR)
+# define ZSTD_IS_DETERMINISTIC_BUILD 0
+#else
+# define ZSTD_IS_DETERMINISTIC_BUILD 1
 #endif
 
 #endif /* ZSTD_PORTABILITY_MACROS_H */
