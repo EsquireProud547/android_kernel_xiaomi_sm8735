@@ -67,7 +67,7 @@ name: Build Onyx Kernel
 #   * BBRv3 (default TCP congestion control)
 #   * NTSync (Windows NT sync primitive emulation)
 #   * Baseband-guard (firmware partition write protection)
-#   * ZSTD v1.5.7 upgrade + ZRAM LZ4 default (4GB/s ultra-fast decompression)
+#   * ZSTD v1.6.0 upgrade (CVE-2026-124851 fix + AArch64 decode) + ZRAM LZ4 default
 #   * I/O scheduler mq-deadline (500ms read timeout anti-starvation for UFS 4.0)
 #   * NoMount (dynamic in-RAM VFS redirection via CI setup.sh)
 #   * Clang-r614150 toolchain from upstream main-kernel branch

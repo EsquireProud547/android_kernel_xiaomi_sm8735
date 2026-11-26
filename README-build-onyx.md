@@ -284,7 +284,7 @@ grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$VENDOR_FRAGMENT" > vendor_builtin.fragment
 4. **F2FS 安全基线保障**：维持原生 LFS 日志追加与 COW 断电安全，剔除扩大 IPU 原地覆写的反向补丁（见 §20）；
 5. **RCU 与内存回收平滑保障**：维持官方 GKI 默认平滑回收基线，避免延迟冲刷与全核 NOCB 抢占 120Hz 前台时间片（见 §21）；
 6. **ThinLTO + AutoFDO 极致生成**：工作流固化开启，充分利用树内权威采样档案（见 §22）；
-7. **ZSTD v1.5.7 全局升级与 LZ4 极速 ZRAM**：默认 `lz4` 提供 4GB/s 页面缺页极速解压，ZSTD 保持纯净官方实现杜绝越界 Bug（见 §23）；
+7. **ZSTD v1.6.0 全局升级与 ZRAM 算法控制权解耦**：默认 `lz4` 提供 4GB/s 页面缺页极速解压；ZSTD 升级至官方 v1.6.0（含 `CVE-2026-124851` 修复与 AArch64 解压优化），保持纯净官方实现（见 §23）；
 8. **I/O 调度器 mq-deadline 防饥饿**：为 UFS 4.0 读请求提供 500ms 超时保证与 ioprio 优先级区分，避免后台重写入冲垮前台（见 §24）；
 9. **专有驱动缺陷根治**：修复温控面板 `PTR_ERR` 伪报错 + 消除二供马达启动期 83 次无效延迟重试（见 §25）；
 10. **NoMount 内存级路径重定向**：CI 在线动态注入架构，零源码树污染，自动跟进上游（见 §26）；
@@ -993,7 +993,7 @@ BBRv3 与 NTSync 均已在真机完整刷入并通过实机验证，系统运行
 
 > **注**：
 > 1. **ZRAM 默认算法**：硬编码启用 `CONFIG_ZRAM_DEF_COMP_LZ4=y`，保证缺页异常路径 4000MB/s 极速解压，避免卡顿；
-> 2. **ZSTD v1.5.7**：升级官方 upstream v1.5.7，剔除有工作区越界风险的负级别补丁，确保官方纯净稳定实现；
+> 2. **ZSTD v1.6.0**：升级官方 upstream v1.6.0（含 `CVE-2026-124851` 修复），继续剔除有工作区越界风险的负级别补丁，确保官方纯净稳定实现；
 > 3. **I/O 调度器**：保持 `mq-deadline`，为 UFS 4.0 关键读请求提供 500ms 超时和优先级调度防饥饿防丢帧；
 > 4. **NoMount 内存级路径重定向**：支持可选开关，采用 CI 动态注入机制，零源码污染，自动跟进上游；
 > 5. **编译器升级**：基于 Google 官方 `main-kernel` 分支的最新 `clang-r614150`；
@@ -1154,22 +1154,40 @@ CONFIG_MODULE_SIG_PROTECT=y
 
 ---
 
-## 23. 全局直接升级 ZSTD 至 v1.5.7 与 ZRAM 算法控制权解耦
+## 23. 全局直接升级 ZSTD 至 v1.6.0 与 ZRAM 算法控制权解耦
 
-### 1. ZSTD 全局直接升级至官方 upstream v1.5.7
+### 1. ZSTD 全局直接升级至官方 upstream v1.6.0
 
-- **代码来源**：直接同步自 Linux 官方 upstream ZSTD 维护者 Nick Terrell 的权威仓库（分支 `zstd-linus`，Tag `2025-03-13-zstd-v1.5.7-v1`，Linux 6.14+ 官方主线代码）。
+- **版本背景**：v1.6.0（2026-11-23 发布）是一次**提前发布的安全修复版本**——上游为处置 `CVE-2026-124851`（流式解压可把 64 KiB 内部 literal 缓冲里的残留数据当作输出，影响 1.5.1~1.5.7）而中途切版，原定 1.6.x 功能延后。因此本版的收益是「安全修复 + ARM64 解压优化」，**不是**压缩格式或压缩率升级（x86 侧无任何性能改动）。
+- **代码来源**：内核主线截至 2026-11-25 仍停留在 6.15 导入的 v1.5.7（Nick Terrell 只向 LKML 提交了 35 行的 CVE 定点补丁，尚无整包 import）。本次直接使用 upstream v1.6.0 自带的 [`contrib/linux-kernel`](https://github.com/facebook/zstd/tree/v1.6.0/contrib/linux-kernel) 生成器（`make libzstd`，内部走 `freestanding.py` + 4 个内核 wrapper 文件）产出内核适配树，不等待主线。
 - **覆盖范围**：
-  - 全量升级 [`lib/zstd/`](lib/zstd/) 下全部公共库、压缩器、解压器及内部模块源码（新增 `zstd_preSplit.c` 等现代压缩加速支持）；
-  - 全量升级 [`include/linux/zstd.h`](include/linux/zstd.h)、[`include/linux/zstd_lib.h`](include/linux/zstd_lib.h) 与 [`include/linux/zstd_errors.h`](include/linux/zstd_errors.h) 头文件。
-- **Linux 6.6 兼容性适配**：
-  - upstream 源码在 [`lib/zstd/common/mem.h`](lib/zstd/common/mem.h) 中默认引用了 Linux 6.12+ 引入的 `<linux/unaligned.h>`；
-  - 针对 Linux 6.6 原生环境，将其适配为 `#include <asm/unaligned.h>`，完美兼容 aarch64 平台；
-  - 本地经由 Clang / LLVM 完成全量 `lib/zstd/` 目标文件编译验证，达到 **0 warning, 0 error**。
+  - 全量替换 [`lib/zstd/`](lib/zstd/)（common / compress / decompress + 三个 module wrapper），同步 [`include/linux/zstd.h`](include/linux/zstd.h)、[`include/linux/zstd_lib.h`](include/linux/zstd_lib.h)、[`include/linux/zstd_errors.h`](include/linux/zstd_errors.h)；
+  - 相对 1.5.7 共 **32 个文件变更（+2091 / −678）**，新增 `lib/zstd/common/bmi2.h`（BMI2 分派抽象，内核 `STATIC_BMI2=0` 下不启用）。
+- **本地补丁面大幅收敛（1.5.7 时 5 处：4 个库文件 + 1 个头文件；现在只剩 1 行）**：
+  - 1.5.7 时代手工维护的 `zstd_default_clevel()` / `zstd_get_cparams()` 导出、zram 字典压缩所需的 `zstd_custom_mem` / `create_cdict_byreference` / `using_cdict` / `dict_*` 导出、以及 row matchfinder 的 `kWindowLogLowerBound = 17` 内核特调，**1.6.0 已全部收进 upstream `contrib/linux-kernel`**，无需再次续命；
+  - 唯一的 6.6 兼容适配：[`lib/zstd/common/mem.h`](lib/zstd/common/mem.h) 中 `#include <linux/unaligned.h>`（6.7+ 才提供）改为 `#include <asm/unaligned.h>`。
+- **性能收益（AArch64，全部为标量 C 改动，不依赖内核禁用的 SIMD）**：
+
+  | 上游提交 | 作用 | 上游实测（Neoverse V2 / silesia） |
+  |:---|:---|:---|
+  | `ZSTD_decodeSequence` 重构 | 解压主循环 | Clang19 +11.6~18%、Clang20 +16~24%、GCC14 +2.2~3.4%、GCC15 +7.9~11.2% |
+  | Huffman `HUF_DEltX2` 32 位访问 | 字面量占比高的块 | +0.1~+2.5% |
+  | `copy8` 块拷贝 | 短匹配 | +0.3~+1.8% |
+  | AArch64 SVE2 / RISC-V RVV | 序列压缩 API / RMF | 与 zram 路径无关（内核不用 SIMD，`ZSTD_NO_INTRINSICS`） |
+
+- **6.6 兼容性与编译验证**：
+  - 在 `stock_onyx.config` + clang 23 `LLVM=1` 下全量编译通过：`lib/zstd/**`、`crypto/zstd.o`、`drivers/block/zram/zram.o`、`fs/btrfs/zstd.o`、`fs/f2fs/compress.o`；
+  - upstream 自带 `contrib/linux-kernel` 的 `make test` 通过（freestanding 转换 + sanitizer 校验）；
+  - 本仓库 CI（clang-r614150、ThinLTO + AutoFDO、97 个模块、3/3 配置闸门）出包成功。
 - **kABI 证明与向后兼容性**：
-  - 对外暴露的 `zstd_*` 接口完全保持向后兼容；
-  - 核心工作区句柄 `ZSTD_CCtx` 与 `ZSTD_DCtx` 在公开头文件中均为不透明指针（Opaque Pointer），外部驱动只通过指针句柄传递，不破坏任何结构体内存布局；
-  - 升级移除了废弃未使用的 `ZSTD_customMalloc/Calloc/Free` 符号，经核查 GKI 冻结 symbol list，此三者从未被列入白名单，不构成 kABI 破坏。
+  - 导出符号集合与 1.5.7 **完全一致（48 个）**，无新增、无删除；
+  - `ZSTD_parameters`、`ZSTD_compressionParameters` 等公开结构体布局未变，`ZSTD_CCtx` / `ZSTD_DCtx` 仍为不透明指针；
+  - `lib/zstd` text 段 447,477 → 450,101 字节（**+2.6 KB / +0.6%**），体积影响可忽略。
+- **真机验证（Onyx / 8 GB ZRAM / zstd）**：
+  - 通过 `/sys/kernel/notes` 的 kernel build-id 与 CI 产物 Image 内 note 比对（`0cf9fc72…`），确认设备运行的确实是 v1.6.0 构建；
+  - 连续运行 17.4 小时、累计 **16,514,085 次 zram 解压**，`failed_reads = failed_writes = invalid_io = 0`；
+  - 无 panic / BUG / OOM / page allocation failure / hung task；内存 PSI full 累计仅 10.7 秒（占 uptime **0.017%**）；
+  - 4.88 GB 原始数据压缩至 1.35 GB（**3.62 : 1**），zsmalloc 额外开销 3.1%，平均每页压缩后约 922 B。
 
 ### 2. 默认采用 LZ4 极速解压引擎保障前台帧率
 
@@ -1179,12 +1197,12 @@ CONFIG_MODULE_SIG_PROTECT=y
   - **换入解压**：当用户切回应用发生缺页中断（Page Fault）时，由**前台 UI 线程同步阻塞执行**！
   - LZ4 具备高达 **3500~4500 MB/s** 的解压吞吐，单页解压仅需约 1 微秒，是 Android 交互流畅度与切应用瞬间零掉帧的核心基石。
 - **配置实现**：
-  在 [`arch/arm64/configs/onyx_gki.fragment`](arch/arm64/configs/onyx_gki.fragment) 中显式启用 `CONFIG_ZRAM_DEF_COMP_LZ4=y`，保证系统开机默认采用最佳前台交互体验的 LZ4 算法。
+  在 [`arch/arm64/configs/onyx_gki.fragment`](arch/arm64/configs/onyx_gki.fragment) 中显式启用 `CONFIG_ZRAM_DEF_COMP_LZ4=y`，保证系统开机默认采用最佳前台交互体验的 LZ4 算法；用户空间（KSU 模块 / init 脚本）可随时通过 `/sys/block/zram0/comp_algorithm` 切到 `zstd`，二者共用同一套 `crypto/zstd` 引擎，互不影响。
 
 ### 3. CI 构建摘要（Build Summary）视觉看板重构
 
 - **重构目的**：原有构建摘要包含 22 行扁平键值对，重点信息不够聚焦。
-- **优化**：在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 中精简为结构化看板，突出产物版本、Clang+LTO+AutoFDO 状态、BakaSU、SUSFS、Baseband-guard、ZSTD v1.5.7、BBRv3、NTSync 等核心特性。
+- **优化**：在 [`.github/workflows/build-onyx.yml`](.github/workflows/build-onyx.yml) 中精简为结构化看板，突出产物版本、Clang+LTO+AutoFDO 状态、BakaSU、SUSFS、Baseband-guard、ZSTD v1.6.0、BBRv3、NTSync 等核心特性。
 
 ### 4. 回退实验性负压缩级别，维持上游纯净稳定架构
 
@@ -1193,7 +1211,12 @@ CONFIG_MODULE_SIG_PROTECT=y
   经事实核查，该改动存在两大弊端：
   1. **双输的解压瓶颈**：ZSTD 负级别虽然压缩变快，但解压依然必须执行完整的有限状态熵（FSE）与霍夫曼解码，解压吞吐仍停留在 ~1000MB/s 级别，且压缩比大幅缩水；
   2. **工作区越界崩溃 Bug**：初始化预分配的工作区内存固定为 level 3，当用户通过 sysfs 将 level 改为 4 及以上时，ZSTD 压缩上下文发现工作区不足会抛出 `-EINVAL` 导致 ZRAM 压缩崩溃。
-- **处置方案**：已彻底回退 `crypto/zstd.c` 至 Linux 官方上游实现，杜绝内核越界崩溃隐患。
+- **处置方案**：已彻底回退 `crypto/zstd.c` 至 Linux 官方上游实现，杜绝内核越界崩溃隐患。1.6.0 导入只替换 `lib/zstd` 库本体，**不改变**「level 固定 3、不提供运行时调参」这一既有结论。
+
+### 5. CI 分支行为修正：`workflow_dispatch` 必须构建所选中分支
+
+- **问题**：`actions/checkout` 硬编码 `ref: seventeen`，导致从测试分支手动触发时实际仍构建主线——1.6.0 的首轮真机测试即因此静默刷入了 1.5.7 的包（产物 Image 内只有 `1.5.7` 版本串）。
+- **修复**：改为 `ref: ${{ github.ref_name }}`，并在摘要中同步 ZSTD 版本号；合并到 `seventeen` 后请勿再改回硬编码，否则从任何测试分支 dispatch 都会构建主线。
 
 ---
 
